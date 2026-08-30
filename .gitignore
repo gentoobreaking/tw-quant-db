@@ -1,0 +1,8 @@
+.ruff_cache/
+__pycache__/
+*.pyc
+secrets/
+.env
+*.db
+*.db-journal
+.pgpass
