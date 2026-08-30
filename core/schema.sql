@@ -202,27 +202,72 @@ CREATE INDEX IF NOT EXISTS idx_core_market_context_type_symbol ON core.market_co
 -- ============================================================
 -- CONSTRAINTS (source_role check, spec §8.1)
 -- ============================================================
+-- CONSTRAINTS (source_role check, spec §8.1)
+-- Idempotent: uses DO blocks to check constraint existence first
+-- ============================================================
 
-ALTER TABLE core.daily_prices
-    ADD CONSTRAINT chk_core_daily_prices_source_role
-    CHECK (source_role IN ('CANONICAL', 'SEMI_OFFICIAL_REALTIME', 'FALLBACK'));
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'chk_core_daily_prices_source_role'
+    ) THEN
+        ALTER TABLE core.daily_prices
+        ADD CONSTRAINT chk_core_daily_prices_source_role
+        CHECK (source_role IN ('CANONICAL', 'SEMI_OFFICIAL_REALTIME', 'FALLBACK'));
+    END IF;
+END $$;
 
-ALTER TABLE core.financials
-    ADD CONSTRAINT chk_core_financials_source_role
-    CHECK (source_role IN ('CANONICAL', 'SEMI_OFFICIAL_REALTIME', 'FALLBACK'));
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'chk_core_financials_source_role'
+    ) THEN
+        ALTER TABLE core.financials
+        ADD CONSTRAINT chk_core_financials_source_role
+        CHECK (source_role IN ('CANONICAL', 'SEMI_OFFICIAL_REALTIME', 'FALLBACK'));
+    END IF;
+END $$;
 
-ALTER TABLE core.monthly_revenues
-    ADD CONSTRAINT chk_core_monthly_revenues_source_role
-    CHECK (source_role IN ('CANONICAL', 'SEMI_OFFICIAL_REALTIME', 'FALLBACK'));
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'chk_core_monthly_revenues_source_role'
+    ) THEN
+        ALTER TABLE core.monthly_revenues
+        ADD CONSTRAINT chk_core_monthly_revenues_source_role
+        CHECK (source_role IN ('CANONICAL', 'SEMI_OFFICIAL_REALTIME', 'FALLBACK'));
+    END IF;
+END $$;
 
-ALTER TABLE core.dividends
-    ADD CONSTRAINT chk_core_dividends_source_role
-    CHECK (source_role IN ('CANONICAL', 'SEMI_OFFICIAL_REALTIME', 'FALLBACK'));
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'chk_core_dividends_source_role'
+    ) THEN
+        ALTER TABLE core.dividends
+        ADD CONSTRAINT chk_core_dividends_source_role
+        CHECK (source_role IN ('CANONICAL', 'SEMI_OFFICIAL_REALTIME', 'FALLBACK'));
+    END IF;
+END $$;
 
-ALTER TABLE core.institutional_flow
-    ADD CONSTRAINT chk_core_institutional_flow_source_role
-    CHECK (source_role IN ('CANONICAL', 'SEMI_OFFICIAL_REALTIME', 'FALLBACK'));
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'chk_core_institutional_flow_source_role'
+    ) THEN
+        ALTER TABLE core.institutional_flow
+        ADD CONSTRAINT chk_core_institutional_flow_source_role
+        CHECK (source_role IN ('CANONICAL', 'SEMI_OFFICIAL_REALTIME', 'FALLBACK'));
+    END IF;
+END $$;
 
-ALTER TABLE core.market_context
-    ADD CONSTRAINT chk_core_market_context_source_role
-    CHECK (source_role IN ('CANONICAL', 'SEMI_OFFICIAL_REALTIME', 'FALLBACK'));
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'chk_core_market_context_source_role'
+    ) THEN
+        ALTER TABLE core.market_context
+        ADD CONSTRAINT chk_core_market_context_source_role
+        CHECK (source_role IN ('CANONICAL', 'SEMI_OFFICIAL_REALTIME', 'FALLBACK'));
+    END IF;
+END $$;

@@ -180,15 +180,15 @@ async def verify_migration(conn):
     all_ok = True
     for core_tbl, pickup_tbl in checks:
         try:
-            core_count = await conn.fetchval(f'SELECT COUNT(*) FROM {core_tbl}')
-            pickup_count = await conn.fetchval(f'SELECT COUNT(*) FROM {pickup_tbl}')
+            core_count = await conn.fetchval(f"SELECT COUNT(*) FROM {core_tbl}")
+            pickup_count = await conn.fetchval(f"SELECT COUNT(*) FROM {pickup_tbl}")
             if core_count == pickup_count:
-                logger.info(f"  ✓ {core_tbl}: {core_count} rows (matches pickup)")
+                logger.info("  ✓ %s: %s rows (matches pickup)", core_tbl, core_count)
             else:
-                logger.warning(f"  ✗ {core_tbl}: {core_count} vs pickup {pickup_count}")
+                logger.warning("  ✗ %s: %s vs pickup %s", core_tbl, core_count, pickup_count)
                 all_ok = False
-        except (OSError, RuntimeError) as e:
-            logger.info(f"  - {core_tbl}: skipped (no pickup data yet) — {e}")
+        except Exception:  # noqa: BLE001 — asyncpg raises various undefined-table errors
+            logger.info("  - %s: skipped (no pickup data yet)", core_tbl)
 
     if all_ok:
         logger.info("✅ All migration verification checks passed")
