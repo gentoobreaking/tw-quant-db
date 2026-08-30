@@ -187,7 +187,7 @@ async def verify_migration(conn):
             else:
                 logger.warning(f"  ✗ {core_tbl}: {core_count} vs pickup {pickup_count}")
                 all_ok = False
-        except (asyncpg.exceptions.UndefinedTableError, Exception) as e:
+        except (OSError, RuntimeError) as e:
             logger.info(f"  - {core_tbl}: skipped (no pickup data yet) — {e}")
 
     if all_ok:
