@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS signal.pipeline_log (
     created_at  TEXT NOT NULL DEFAULT (NOW()::text)
 );
 
-CREATE INDEX IF NOT EXISTS signal.idx_pipeline_run ON signal.pipeline_log(run_date, task);
+CREATE INDEX IF NOT EXISTS idx_pipeline_run ON signal.pipeline_log(run_date, task);
 
 -- ============================================================
 -- daily_prices  (signal uses stock_id, core uses symbol)
@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS signal.daily_prices (
     PRIMARY KEY (stock_id, trade_date)
 );
 
-CREATE INDEX IF NOT EXISTS signal.idx_daily_date_stock ON signal.daily_prices(trade_date, stock_id);
+CREATE INDEX IF NOT EXISTS idx_daily_date_stock ON signal.daily_prices(trade_date, stock_id);
 
 -- ============================================================
 -- market_index
@@ -68,7 +68,7 @@ CREATE TABLE IF NOT EXISTS signal.institutional_flows (
     PRIMARY KEY (stock_id, trade_date)
 );
 
-CREATE INDEX IF NOT EXISTS signal.idx_inst_flows_date_stock ON signal.institutional_flows(trade_date, stock_id);
+CREATE INDEX IF NOT EXISTS idx_inst_flows_date_stock ON signal.institutional_flows(trade_date, stock_id);
 
 -- ============================================================
 -- signals
@@ -351,7 +351,7 @@ CREATE TABLE IF NOT EXISTS signal.structural_drift (
     details         TEXT
 );
 
-CREATE INDEX IF NOT EXISTS signal.idx_structural_drift ON signal.structural_drift(trade_date, drift_type);
+CREATE INDEX IF NOT EXISTS idx_structural_drift ON signal.structural_drift(trade_date, drift_type);
 
 -- ============================================================
 -- operation_log
@@ -412,9 +412,9 @@ CREATE TABLE IF NOT EXISTS signal.performance_log (
     UNIQUE(stock_id, rule_id, trigger_date)
 );
 
-CREATE INDEX IF NOT EXISTS signal.idx_perf_log_trigger ON signal.performance_log(trigger_date);
-CREATE INDEX IF NOT EXISTS signal.idx_perf_log_rule ON signal.performance_log(rule_id);
-CREATE INDEX IF NOT EXISTS signal.idx_perf_log_stock ON signal.performance_log(stock_id);
+CREATE INDEX IF NOT EXISTS idx_perf_log_trigger ON signal.performance_log(trigger_date);
+CREATE INDEX IF NOT EXISTS idx_perf_log_rule ON signal.performance_log(rule_id);
+CREATE INDEX IF NOT EXISTS idx_perf_log_stock ON signal.performance_log(stock_id);
 
 -- ============================================================
 -- watchlist_history (T010)
@@ -426,10 +426,10 @@ CREATE TABLE IF NOT EXISTS signal.watchlist_history (
     UNIQUE(stock_id, since_date)
 );
 
-CREATE INDEX IF NOT EXISTS signal.idx_watchlist_history_status ON signal.watchlist_history(stock_id, removed_date);
+CREATE INDEX IF NOT EXISTS idx_watchlist_history_status ON signal.watchlist_history(stock_id, removed_date);
 
 -- ============================================================
 -- Indexes summary
 -- ============================================================
 
-CREATE INDEX IF NOT EXISTS signal.idx_operation_log ON signal.operation_log(log_date, action);
+CREATE INDEX IF NOT EXISTS idx_operation_log ON signal.operation_log(log_date, action);

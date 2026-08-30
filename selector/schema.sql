@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS selector.lots (
     PRIMARY KEY (id)
 );
 
-CREATE INDEX IF NOT EXISTS selector.idx_lots_stock ON selector.lots(stock_id);
+CREATE INDEX IF NOT EXISTS idx_lots_stock ON selector.lots(stock_id);
 
 -- ============================================================
 -- alert_settings（警示设定）
@@ -71,8 +71,8 @@ CREATE TABLE IF NOT EXISTS selector.alert_rules (
     updated_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS selector.idx_alert_rules_enabled ON selector.alert_rules (enabled);
-CREATE INDEX IF NOT EXISTS selector.idx_alert_rules_severity ON selector.alert_rules (severity);
+CREATE INDEX IF NOT EXISTS idx_alert_rules_enabled ON selector.alert_rules (enabled);
+CREATE INDEX IF NOT EXISTS idx_alert_rules_severity ON selector.alert_rules (severity);
 
 -- ============================================================
 -- alert_history（警示发送纪录）
@@ -95,9 +95,9 @@ CREATE TABLE IF NOT EXISTS selector.alert_history (
     PRIMARY KEY (log_id)
 );
 
-CREATE INDEX IF NOT EXISTS selector.idx_alert_history_stock ON selector.alert_history(stock_id);
-CREATE INDEX IF NOT EXISTS selector.idx_alert_history_triggered ON selector.alert_history(triggered_at);
-CREATE INDEX IF NOT EXISTS selector.idx_alert_history_resolved_at ON selector.alert_history(resolved_at);
+CREATE INDEX IF NOT EXISTS idx_alert_history_stock ON selector.alert_history(stock_id);
+CREATE INDEX IF NOT EXISTS idx_alert_history_triggered ON selector.alert_history(triggered_at);
+CREATE INDEX IF NOT EXISTS idx_alert_history_resolved_at ON selector.alert_history(resolved_at);
 
 -- ============================================================
 -- alert_cooldowns（執行冷卻追踪）
@@ -109,7 +109,7 @@ CREATE TABLE IF NOT EXISTS selector.alert_cooldowns (
     PRIMARY KEY (rule_name, stock_id)
 );
 
-CREATE INDEX IF NOT EXISTS selector.idx_alert_cooldowns_last ON selector.alert_cooldowns(last_triggered);
+CREATE INDEX IF NOT EXISTS idx_alert_cooldowns_last ON selector.alert_cooldowns(last_triggered);
 
 -- ============================================================
 -- realtime_quotes（即时行情）
@@ -133,7 +133,7 @@ CREATE TABLE IF NOT EXISTS selector.realtime_quotes (
     PRIMARY KEY (stock_id, quote_time)
 );
 
-CREATE INDEX IF NOT EXISTS selector.idx_realtime_quotes_time ON selector.realtime_quotes (quote_time);
+CREATE INDEX IF NOT EXISTS idx_realtime_quotes_time ON selector.realtime_quotes (quote_time);
 
 -- ============================================================
 -- intraday_kline（分内 K 線）
@@ -150,8 +150,8 @@ CREATE TABLE IF NOT EXISTS selector.intraday_kline (
     PRIMARY KEY (stock_id, k_time, period_min)
 );
 
-CREATE INDEX IF NOT EXISTS selector.idx_intraday_kline_time ON selector.intraday_kline (k_time);
-CREATE INDEX IF NOT EXISTS selector.idx_intraday_kline_stock_time ON selector.intraday_kline (stock_id, k_time);
+CREATE INDEX IF NOT EXISTS idx_intraday_kline_time ON selector.intraday_kline (k_time);
+CREATE INDEX IF NOT EXISTS idx_intraday_kline_stock_time ON selector.intraday_kline (stock_id, k_time);
 
 -- ============================================================
 -- backtest_runs（回测运行纪录）
@@ -187,7 +187,7 @@ CREATE TABLE IF NOT EXISTS selector.backtest_positions (
     PRIMARY KEY (run_id, trade_date, stock_id)
 );
 
-CREATE INDEX IF NOT EXISTS selector.idx_backtest_positions_run ON selector.backtest_positions(run_id);
+CREATE INDEX IF NOT EXISTS idx_backtest_positions_run ON selector.backtest_positions(run_id);
 
 -- ============================================================
 -- backtest_equity（回测净值曲線）
@@ -201,7 +201,7 @@ CREATE TABLE IF NOT EXISTS selector.backtest_equity (
     PRIMARY KEY (run_id, trade_date)
 );
 
-CREATE INDEX IF NOT EXISTS selector.idx_backtest_equity_run ON selector.backtest_equity(run_id);
+CREATE INDEX IF NOT EXISTS idx_backtest_equity_run ON selector.backtest_equity(run_id);
 
 -- ============================================================
 -- guru_scores（大师策略评分）
@@ -216,8 +216,8 @@ CREATE TABLE IF NOT EXISTS selector.guru_scores (
     PRIMARY KEY (score_date, stock_id, guru)
 );
 
-CREATE INDEX IF NOT EXISTS selector.idx_guru_scores_guru ON selector.guru_scores(guru);
-CREATE INDEX IF NOT EXISTS selector.idx_guru_scores_date ON selector.guru_scores(score_date);
+CREATE INDEX IF NOT EXISTS idx_guru_scores_guru ON selector.guru_scores(guru);
+CREATE INDEX IF NOT EXISTS idx_guru_scores_date ON selector.guru_scores(score_date);
 
 -- ============================================================
 -- strategy_config_history（策略设定历史）
@@ -236,7 +236,7 @@ CREATE TABLE IF NOT EXISTS selector.strategy_config_history (
     PRIMARY KEY (config_id)
 );
 
-CREATE INDEX IF NOT EXISTS selector.idx_strategy_config_history_changed ON selector.strategy_config_history(changed_at);
+CREATE INDEX IF NOT EXISTS idx_strategy_config_history_changed ON selector.strategy_config_history(changed_at);
 
 -- ============================================================
 -- ingestion_tracker（资料摄取进度追踪）
@@ -251,8 +251,8 @@ CREATE TABLE IF NOT EXISTS selector.ingestion_tracker (
     PRIMARY KEY (stock_id, dataset)
 );
 
-CREATE INDEX IF NOT EXISTS selector.idx_ingestion_tracker_dataset ON selector.ingestion_tracker(dataset);
-CREATE INDEX IF NOT EXISTS selector.idx_ingestion_tracker_updated ON selector.ingestion_tracker(last_updated);
+CREATE INDEX IF NOT EXISTS idx_ingestion_tracker_dataset ON selector.ingestion_tracker(dataset);
+CREATE INDEX IF NOT EXISTS idx_ingestion_tracker_updated ON selector.ingestion_tracker(last_updated);
 
 -- ============================================================
 -- operation_logs（操作日志）
@@ -268,5 +268,5 @@ CREATE TABLE IF NOT EXISTS selector.operation_logs (
     PRIMARY KEY (id)
 );
 
-CREATE INDEX IF NOT EXISTS selector.idx_operation_logs_module ON selector.operation_logs(module);
-CREATE INDEX IF NOT EXISTS selector.idx_operation_logs_created ON selector.operation_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_operation_logs_module ON selector.operation_logs(module);
+CREATE INDEX IF NOT EXISTS idx_operation_logs_created ON selector.operation_logs(created_at);
