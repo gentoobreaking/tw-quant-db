@@ -16,7 +16,7 @@ services:
     secrets:
       - pg_password
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U twquant"]
+      test: ["CMD-SHELL", "pg_isready -U twquant -d twquant_shared"]
       interval: 10s
       timeout: 5s
       retries: 5
