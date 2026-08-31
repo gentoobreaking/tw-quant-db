@@ -501,7 +501,8 @@ func runBackfill(ctx context.Context, db *sql.DB, opts BackfillOptions) (*Backfi
 					}
 					totalSuccess++
 					totalRows += len(result.data)
-					recordSourceStats(statsMap, result.name, len(result.data), 0)
+					recordSourceStats(statsMap, result.name, 1, 0)
+					statsMap[result.name].RowsFetched += len(result.data)
 					fmt.Fprintf(os.Stderr, "[INFO] fetched %s from %s for %s (%s), rows=%d, coverage=%.2f\n",
 						s, result.name, b.Start.Format("2006-01-02"), b.End.Format("2006-01-02"), len(result.data), result.coverage)
 
@@ -683,4 +684,19 @@ func main() {
 	output, _ := json.MarshalIndent(report, "", "  ")
 	_, _ = os.Stderr.WriteString(string(output))
 	os.Stderr.WriteString("\n")
+	// 持久化彙整報告（各通路筆數/時間範圍/完成率）
+	reportDir := "/app/data"
+	if _, err := os.Stat(reportDir); os.IsNotExist(err) {
+		reportDir = "."
+	}
+	reportPath := reportDir + "/backfill_report.json"
+	// 同時寫 timestamp 檔以保留歷史
+	tsPath := fmt.Sprintf("%s/backfill_report_%s.json", reportDir, time.Now().Format("20060102_150405"))
+	for _, p := range []string{reportPath, tsPath} {
+		if err := os.WriteFile(p, output, 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "write report %s failed: %v\n", p, err)
+		} else {
+			fmt.Fprintf(os.Stderr, "report written to %s\n", p)
+		}
+	}
 }
