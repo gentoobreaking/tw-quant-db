@@ -1,0 +1,26 @@
+# Docker image for running core data backfill.
+# Built from tw-quant-db repo so it can access the shared PostgreSQL schema.
+FROM python:3.11-slim AS runtime
+
+WORKDIR /app
+
+# Install minimal dependencies for psycopg2 + async HTTP
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libpq-dev \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python deps
+RUN pip install --no-cache-dir \
+    "psycopg[binary]" \
+    "psycopg2-binary" \
+    asyncio \
+    httpx \
+    yfinance
+
+# Copy backfill script
+COPY backfill_core.py .
+
+# No CMD — meant to be run manually or via docker-compose profiles
+ENTRYPOINT ["python", "backfill_core.py"]

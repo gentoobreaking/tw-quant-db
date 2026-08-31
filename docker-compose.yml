@@ -20,6 +20,26 @@ services:
       - tw-quant-network
     restart: unless-stopped
 
+  # One-shot backfill service for core.daily_prices (manual trigger)
+  backfill:
+    build:
+      context: .
+      dockerfile: Dockerfile.backfill
+    container_name: tw-quant-backfill
+    environment:
+      - DATABASE_URL=postgresql://twquant:${POSTGRES_PASSWORD}@postgres:5432/twquant_shared
+      - MCP_HOST=http://tw-quant-mcp:8000
+      - STOCK_IDS=
+      - STOCKS_FILE=
+      - BACKFILL_ALL_LISTED=false
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - tw-quant-network
+    profiles: ["backfill"]
+    restart: "no"
+
   # pgAdmin for schema/DB inspection
   pgadmin:
     image: dpage/pgadmin4:latest
