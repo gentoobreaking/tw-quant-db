@@ -114,7 +114,6 @@ func randomDelay(min, max time.Duration) time.Duration {
 	return time.Duration(rand.Int64N(int64(max-min))) + min
 }
 
-// resolveRange computes start/end from --range string (e.g. "5Y", "3M") per spec §12.
 func resolveRange(rangeStr string) (time.Time, time.Time) {
 	now := time.Now()
 	if rangeStr == "" {
@@ -129,6 +128,10 @@ func resolveRange(rangeStr string) (time.Time, time.Time) {
 		return now.AddDate(-num, 0, 0), now
 	case "m", "M":
 		return now.AddDate(0, -num, 0), now
+	case "w", "W":
+		return now.AddDate(0, 0, -num*7), now
+	case "d", "D":
+		return now.AddDate(0, 0, -num), now
 	default:
 		return now.AddDate(-5, 0, 0), now
 	}
@@ -172,11 +175,11 @@ WHERE dp.trade_date IS NULL
 `
 		rows, err = db.QueryContext(ctx, query, start.Format("2006-01-02"), end.Format("2006-01-02"), symbol)
 	} else {
-		query = `
+	query = `
 WITH RECURSIVE date_series(d) AS (
     VALUES ($1::date)
   UNION ALL
-    SELECT d + INTERVAL '1 day' FROM date_series WHERE d < $2::date
+    SELECT (d + INTERVAL '1 day')::date FROM date_series WHERE d < $2::date
 )
 SELECT ds.d AS missing_date
 FROM date_series ds

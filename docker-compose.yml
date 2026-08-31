@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   postgres:
     image: postgres:16-alpine
@@ -20,28 +18,31 @@ services:
       - tw-quant-network
     restart: unless-stopped
 
-  # One-shot backfill service for core.daily_prices (manual trigger)
+  # One-shot backfill service for core.daily_prices (auto 7d on up)
+  # Requires tw-quant-mcp running separately (tw-quant-mcp/docker-compose.yml)
+  # and shared network tw-quant-network (docker network create tw-quant-network)
   backfill:
     build:
       context: .
       dockerfile: Dockerfile.backfill
     container_name: tw-quant-backfill
     environment:
-      - DATABASE_URL=postgresql://twquant:${POSTGRES_PASSWORD}@postgres:5432/twquant_shared
-      - MCP_HOST=http://tw-quant-mcp:8000/mcp
+      - DATABASE_URL=postgresql://twquant:${POSTGRES_PASSWORD}@postgres:5432/twquant_shared?sslmode=disable
+      - MCP_HOST=http://tw-quant-mcp:8000
       - TWSE_MCP_URL=https://TW-Stock-MCP-Server.fastmcp.app/mcp
-      - FINMIND_API_KEY=
-      - BACKFILL_SOURCES=both
+      - FINMIND_API_KEY=${FINMIND_TOKEN:-}
+      - FINMIND_TOKEN=${FINMIND_TOKEN:-}
+      - BACKFILL_ALL_LISTED=true
       - STOCK_IDS=
       - STOCKS_FILE=
-      - BACKFILL_ALL_LISTED=false
-    command: ["--stock", "2330", "--dry-run"]
+    command: ["--range", "7d"]
+    volumes:
+      - ./backfill_data:/app/data
     depends_on:
       postgres:
         condition: service_healthy
     networks:
       - tw-quant-network
-    profiles: ["backfill"]
     restart: "no"
 
   # pgAdmin for schema/DB inspection
@@ -73,7 +74,8 @@ volumes:
 
 networks:
   tw-quant-network:
-    driver: bridge
+    name: tw-quant-network
+    external: true
 
 secrets:
   pg_password:

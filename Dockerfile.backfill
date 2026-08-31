@@ -22,7 +22,7 @@ FROM python:3.12-alpine AS python
 RUN apk add --no-cache curl git build-base && \
     curl -LsSf https://astral.sh/uv/install.sh | sh && \
     /root/.local/bin/uv tool install finmind-mcp && \
-    /root/.local/bin/uv tool install yfinance-mcp
+    /root/.local/bin/uv tool install --with "mcp<2" yfinance-mcp
 
 # Runtime stage
 FROM alpine:3.24
@@ -39,7 +39,8 @@ COPY --from=python /root/.local/bin/uv /usr/local/bin/uv
 COPY --from=python /root/.local/bin/uvx /usr/local/bin/uvx
 COPY --from=python /root/.local/share/uv/tools /root/.local/share/uv/tools
 RUN chown -R app:app /root/.local/share/uv/tools && \
-    mkdir -p /app/checkpoints && chown app:app /app/checkpoints
+    mkdir -p /app/checkpoints && chown app:app /app/checkpoints && \
+    chown app:app /app
 
 USER app
 
