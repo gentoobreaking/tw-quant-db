@@ -26,8 +26,10 @@ services:
       PGADMIN_DEFAULT_EMAIL: admin@twquant.internal
       PGADMIN_DEFAULT_PASSWORD_FILE: /run/secrets/pgadmin_password
       PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
+      PGPASS_FILE: /run/secrets/pgpass
     secrets:
       - pgadmin_password
+      - pgpass
     ports:
       - "5050:80"
     volumes:
@@ -45,3 +47,5 @@ secrets:
     file: ./secrets/postgres_password.txt
   pgadmin_password:
     file: ./secrets/pgadmin_password.txt
+  pgpass:
+    file: ./secrets/pgpass
