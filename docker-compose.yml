@@ -16,6 +16,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - tw-quant-network
     restart: unless-stopped
 
   # pgAdmin for schema/DB inspection
@@ -36,11 +38,18 @@ services:
       - pgadmin_data:/var/lib/pgadmin
       - ./scripts/pgadmin_servers.json:/pgadmin4/servers.json:ro
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+    networks:
+      - tw-quant-network
     restart: unless-stopped
 
 volumes:
   pgadmin_data:
+
+networks:
+  tw-quant-network:
+    driver: bridge
 
 secrets:
   pg_password:
