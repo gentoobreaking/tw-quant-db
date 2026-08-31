@@ -28,13 +28,11 @@ services:
       PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
     secrets:
       - pgadmin_password
-      - pgpass
     ports:
       - "5050:80"
     volumes:
       - pgadmin_data:/var/lib/pgadmin
       - ./scripts/pgadmin_servers.json:/pgadmin4/servers.json:ro
-      - ./scripts/pgadmin.pgpass:/var/lib/pgadmin/.pgpass:ro
     depends_on:
       - postgres
     restart: unless-stopped
@@ -47,5 +45,3 @@ secrets:
     file: ./secrets/postgres_password.txt
   pgadmin_password:
     file: ./secrets/pgadmin_password.txt
-  pgpass:
-    file: ./secrets/pgpass
