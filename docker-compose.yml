@@ -28,10 +28,14 @@ services:
     container_name: tw-quant-backfill
     environment:
       - DATABASE_URL=postgresql://twquant:${POSTGRES_PASSWORD}@postgres:5432/twquant_shared
-      - MCP_HOST=http://tw-quant-mcp:8000
+      - MCP_HOST=http://tw-quant-mcp:8000/mcp
+      - TWSE_MCP_URL=https://TW-Stock-MCP-Server.fastmcp.app/mcp
+      - FINMIND_API_KEY=
+      - BACKFILL_SOURCES=both
       - STOCK_IDS=
       - STOCKS_FILE=
       - BACKFILL_ALL_LISTED=false
+    command: ["--stock", "2330", "--dry-run"]
     depends_on:
       postgres:
         condition: service_healthy

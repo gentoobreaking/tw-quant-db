@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS core.stocks (
     security_type VARCHAR(20) NOT NULL,
     listed_date DATE,
     active BOOLEAN DEFAULT TRUE,
+    needs_manual_review BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP NOT NULL,
     updated_at TIMESTAMP NOT NULL
 );
@@ -245,6 +246,17 @@ CREATE TABLE IF NOT EXISTS core.decisions (
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
+-- ============================================================
+-- TRADING CALENDAR (spec §4 fallback logic support)
+-- ===============================================================
+CREATE TABLE IF NOT EXISTS core.trading_calendar (
+    trade_date DATE NOT NULL,
+    is_trading BOOLEAN NOT NULL DEFAULT TRUE,
+    day_of_week INTEGER,  -- 0=Sunday, 6=Saturday
+    PRIMARY KEY (trade_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_core_trading_calendar_is_trading ON core.trading_calendar(is_trading);
 
 -- ============================================================
 -- INDEXES

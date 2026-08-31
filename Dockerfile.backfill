@@ -1,26 +1,46 @@
-# Docker image for running core data backfill.
+# Docker image for running core data backfill (Go binary + Python for stdio MCP).
 # Built from tw-quant-db repo so it can access the shared PostgreSQL schema.
-FROM python:3.11-slim AS runtime
+# Multi-stage: build Go binary -> install Python/uvx -> static alpine runtime.
+FROM golang:1.26-alpine3.24 AS builder
+
+WORKDIR /build/backfill
+
+# Cache go modules
+COPY backfill/go.mod ./go.mod
+COPY backfill/go.sum ./go.sum
+RUN go mod download
+
+# Copy source
+COPY backfill/ .
+
+# Build static binary (spec §13: single binary, no venv/packaging layer)
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o backfill_core .
+
+# Python stage for stdio MCP servers (finmind-mcp, yfinance-mcp)
+FROM python:3.12-alpine AS python
+
+RUN apk add --no-cache curl git build-base && \
+    curl -LsSf https://astral.sh/uv/install.sh | sh && \
+    /root/.local/bin/uv tool install finmind-mcp && \
+    /root/.local/bin/uv tool install yfinance-mcp
+
+# Runtime stage
+FROM alpine:3.24
+
+# Create non-root user
+RUN addgroup -S app && adduser -S app -G app
 
 WORKDIR /app
 
-# Install minimal dependencies for psycopg2 + async HTTP
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    libpq-dev \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
+# Copy binary from builder
+COPY --from=builder /build/backfill/backfill_core .
 
-# Python deps
-RUN pip install --no-cache-dir \
-    "psycopg[binary]" \
-    "psycopg2-binary" \
-    asyncio \
-    httpx \
-    yfinance
+COPY --from=python /root/.local/bin/uv /usr/local/bin/uv
+COPY --from=python /root/.local/bin/uvx /usr/local/bin/uvx
+COPY --from=python /root/.local/share/uv/tools /root/.local/share/uv/tools
+RUN chown -R app:app /root/.local/share/uv/tools && \
+    mkdir -p /app/checkpoints && chown app:app /app/checkpoints
 
-# Copy backfill script
-COPY backfill_core.py .
+USER app
 
-# No CMD — meant to be run manually or via docker-compose profiles
-ENTRYPOINT ["python", "backfill_core.py"]
+ENTRYPOINT ["/app/backfill_core"]
