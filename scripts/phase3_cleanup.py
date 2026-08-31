@@ -65,11 +65,11 @@ async def drop_compat_views(conn, apply: bool = False):
 
 PARTITION_SQL = """
 -- Convert core.daily_prices to monthly range partitioning (Phase 3)
+-- Requires rebuilding the table as PARTITION BY RANGE
+-- Step 2a: Create new partitioned table
+DROP TABLE IF EXISTS core.daily_prices_new CASCADE;
 
--- Step 2a: Create partitioned parent table
-DROP TABLE IF EXISTS core.daily_prices CASCADE;
-
-CREATE TABLE core.daily_prices (
+CREATE TABLE core.daily_prices_new (
     symbol VARCHAR(10) NOT NULL,
     trade_date DATE NOT NULL,
     open NUMERIC(14,4),
@@ -89,7 +89,6 @@ CREATE TABLE core.daily_prices (
 ) PARTITION BY RANGE (trade_date);
 
 -- Step 2b: Create monthly partitions for past 2 years + current
--- (Auto-creates next 24 months of partitions)
 DO $$
 DECLARE
     start_date DATE := DATE_TRUNC('month', CURRENT_DATE) - INTERVAL '2 years';
@@ -104,7 +103,7 @@ BEGIN
 
         EXECUTE format($sql$
             CREATE TABLE IF NOT EXISTS core.%I
-            PARTITION OF core.daily_prices
+            PARTITION OF core.daily_prices_new
             FOR VALUES FROM (%L) TO (%L)
         $sql$, partition_name, current_date, next_month);
 
@@ -115,7 +114,14 @@ BEGIN
     END LOOP;
 END $$;
 
--- Step 2c: Add BRIN index for large scans
+-- Step 2c: Copy data from old table to new partitioned table
+INSERT INTO core.daily_prices_new SELECT * FROM core.daily_prices;
+
+-- Step 2d: Drop old table and rename
+DROP TABLE IF EXISTS core.daily_prices CASCADE;
+ALTER TABLE core.daily_prices_new RENAME TO daily_prices;
+
+-- Step 2e: Add BRIN index for large scans
 CREATE INDEX IF NOT EXISTS idx_daily_prices_brin_date ON core.daily_prices USING BRIN(trade_date);
 """.strip()
 
@@ -124,6 +130,28 @@ CREATE INDEX IF NOT EXISTS idx_daily_prices_brin_date ON core.daily_prices USING
 
 PERMISSIONS_SQL = """
 -- Service account roles (per spec §3.4)
+-- Create roles first (idempotent)
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'twquant_readonly') THEN
+        CREATE ROLE twquant_readonly;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'twquant_core_writer') THEN
+        CREATE ROLE twquant_core_writer;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'twquant_pickup') THEN
+        CREATE ROLE twquant_pickup LOGIN PASSWORD 'twquant-secret-password';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'twquant_selector') THEN
+        CREATE ROLE twquant_selector LOGIN PASSWORD 'twquant-secret-password';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'twquant_signal') THEN
+        CREATE ROLE twquant_signal LOGIN PASSWORD 'twquant-secret-password';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'twquant_audit_writer') THEN
+        CREATE ROLE twquant_audit_writer;
+    END IF;
+END $$;
 
 -- core 唯讀角色 (signal, selector, daybrain)
 REVOKE ALL ON SCHEMA core FROM PUBLIC;
@@ -131,7 +159,6 @@ GRANT USAGE ON SCHEMA core TO twquant_readonly;
 GRANT SELECT ON ALL TABLES IN SCHEMA core TO twquant_readonly;
 
 -- core 寫入角色 (pickup 攝取管線)
-REVOKE ALL ON SCHEMA core FROM PUBLIC;
 GRANT USAGE, CREATE ON SCHEMA core TO twquant_core_writer;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA core TO twquant_core_writer;
 
@@ -154,7 +181,6 @@ GRANT USAGE ON SCHEMA audit TO twquant_audit_writer;
 GRANT INSERT, SELECT ON ALL TABLES IN SCHEMA audit TO twquant_audit_writer;
 """.strip()
 
-
 # ─── Step 4: Backup script ────────────────────────────────────────────
 
 BACKUP_SQL = """#!/bin/bash
@@ -168,6 +194,8 @@ DATE=$(date +%Y%m%d_%H%M%S)
 DATABASE="${DATABASE:-twquant_shared}"
 HOST="${DB_HOST:-localhost}"
 USER="${DB_USER:-twquant}"
+PASSWORD="${DB_PASSWORD:-twquant-secret-password}"
+export PGPASSWORD="$PASSWORD"
 
 mkdir -p "$BACKUP_DIR"
 
@@ -202,26 +230,32 @@ fi
 async def apply_partitions(conn, apply: bool = False):
     """建立 daily_prices 月度分區 + BRIN 索引。"""
     logger.info("Step 2: daily_prices range partition (monthly) + BRIN index")
+
+    # Check data volume — skip partition if < 1M rows (per spec)
+    row_count = await conn.fetchval("SELECT count(*) FROM core.daily_prices")
+    if row_count < 1_000_000:
+        logger.info("  ⏭️  Skip partitioning: core.daily_prices has %d rows (< 1M threshold)", row_count)
+        logger.info("  Partitioning deferred until data volume exceeds 1M rows")
+        return
+
     if apply:
-        for stmt in PARTITION_SQL.split(";"):
-            stmt = stmt.strip()
-            if stmt:
-                await conn.execute(stmt)
+        await conn.execute(PARTITION_SQL)
         logger.info("  ✓ Partitioned daily_prices with BRIN indexes")
     else:
         logger.info("  [DRY RUN] Would create monthly partitions + BRIN indexes")
 
-
 async def apply_permissions(conn, apply: bool = False):
     """設定 service account 權限。"""
     logger.info("Step 3: Service account permissions")
-    for stmt in PERMISSIONS_SQL.split(";"):
-        stmt = stmt.strip()
-        if stmt:
-            if apply:
-                await conn.execute(stmt)
-                logger.info("  ✓ Applied: %s", stmt[:60])
-            else:
+    if apply:
+        # Execute as single block (DO $$ blocks contain semicolons)
+        await conn.execute(PERMISSIONS_SQL)
+        logger.info("  ✓ Applied all service account permissions (6 roles + grants)")
+    else:
+        # Log each statement for dry-run
+        for stmt in PERMISSIONS_SQL.split("\n"):
+            stmt = stmt.strip()
+            if stmt and not stmt.startswith("--"):
                 logger.info("  [DRY RUN] %s", stmt[:60])
 
 
