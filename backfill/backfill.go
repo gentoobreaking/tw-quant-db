@@ -611,8 +611,8 @@ func main() {
 			dbDriver = "sqlite"
 			dsn = sqlitePath
 		} else {
-			dbDriver = "pgx"
-			dsn = "postgresql://twquant:twquant-secret-password@localhost:5432/twquant_shared"
+			fmt.Fprintf(os.Stderr, "DATABASE_URL not set and TW_QUANT_DB_PATH not set\n")
+			os.Exit(1)
 		}
 	} else {
 		dbDriver = "pgx"

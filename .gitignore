@@ -7,3 +7,4 @@ secrets/
 *.db-journal
 .pgpass
 pg_data/
+backfill/backfill_core

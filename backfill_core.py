@@ -173,9 +173,11 @@ if __name__ == "__main__":
     if args.stock_ids:
         stocks = [s.strip() for s in args.stock_ids.split(",")]
 
-    dsn = os.environ.get("DATABASE_URL", "postgresql://twquant:twquant-secret-password@host.docker.internal:5432/twquant_shared")
+    dsn = os.environ.get("DATABASE_URL")
+    if not dsn:
+        print("DATABASE_URL not set", file=sys.stderr)
+        sys.exit(1)
     with psycopg.connect(dsn) as conn:
-        conn.execute("SET search_path TO core, public")
         total = 0
         for sid in stocks:
             if args.auto or (not args.start or not args.end):
