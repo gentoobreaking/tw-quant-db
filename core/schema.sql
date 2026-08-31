@@ -210,6 +210,41 @@ CREATE TABLE IF NOT EXISTS core.margin_trading (
 
 CREATE INDEX IF NOT EXISTS idx_core_margin_trading_trade_date ON core.margin_trading(trade_date);
 CREATE INDEX IF NOT EXISTS idx_core_margin_trading_symbol ON core.margin_trading(symbol);
+CREATE TABLE IF NOT EXISTS core.alerts (
+    id BIGSERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    alert_type VARCHAR(20) NOT NULL,
+    asset VARCHAR(20) NOT NULL,
+    target_price NUMERIC(14,4) NOT NULL,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    triggered_at TIMESTAMP,
+    extra_data VARCHAR(500)
+);
+
+CREATE TABLE IF NOT EXISTS core.decisions (
+    id BIGSERIAL PRIMARY KEY,
+    user_id INTEGER,
+    portfolio_id INTEGER,
+    decision_type VARCHAR(20) NOT NULL,
+    source VARCHAR(50) NOT NULL,
+    asset VARCHAR(20) DEFAULT 'GOLD',
+    signal_strength REAL NOT NULL,
+    confidence REAL NOT NULL,
+    price_target NUMERIC(14,4),
+    stop_loss NUMERIC(14,4),
+    reason_zh TEXT,
+    reason_en TEXT,
+    indicators_snapshot TEXT,
+    analysis_scores TEXT,
+    is_executed BOOLEAN DEFAULT FALSE,
+    executed_at TIMESTAMP,
+    execution_price NUMERIC(14,4),
+    model_version VARCHAR(50) DEFAULT 'v1',
+    extra_data TEXT,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
 
 -- ============================================================
 -- INDEXES
@@ -223,6 +258,12 @@ CREATE INDEX IF NOT EXISTS idx_core_institutional_flow_trade_date ON core.instit
 CREATE INDEX IF NOT EXISTS idx_core_universe_flags_flag_date ON core.universe_flags(flag_date);
 CREATE INDEX IF NOT EXISTS idx_core_market_context_trade_date ON core.market_context(trade_date);
 CREATE INDEX IF NOT EXISTS idx_core_market_context_type_symbol ON core.market_context(context_type, symbol);
+CREATE INDEX IF NOT EXISTS idx_core_alerts_user_id ON core.alerts(user_id);
+CREATE INDEX IF NOT EXISTS idx_core_alerts_asset ON core.alerts(asset);
+CREATE INDEX IF NOT EXISTS idx_core_alerts_created_at ON core.alerts(created_at);
+CREATE INDEX IF NOT EXISTS idx_core_decisions_user_id ON core.decisions(user_id);
+CREATE INDEX IF NOT EXISTS idx_core_decisions_asset ON core.decisions(asset);
+CREATE INDEX IF NOT EXISTS idx_core_decisions_created_at ON core.decisions(created_at);
 
 -- ============================================================
 -- CONSTRAINTS (source_role check, spec §8.1)
