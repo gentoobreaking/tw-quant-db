@@ -4,12 +4,8 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: twquant-shared-postgres
-    environment:
-      POSTGRES_USER: twquant
-      POSTGRES_PASSWORD_FILE: /run/secrets/pg_password
-      POSTGRES_DB: twquant_shared
     volumes:
-      - pg_data:/var/lib/postgresql/data
+      - ./pg_data:/var/lib/postgresql/data
       - ./init-scripts:/docker-entrypoint-initdb.d
     ports:
       - "5432:5432"
@@ -27,7 +23,7 @@ services:
     image: dpage/pgadmin4:latest
     container_name: twquant-pgadmin
     environment:
-      PGADMIN_DEFAULT_EMAIL: admin@twquant.local
+      PGADMIN_DEFAULT_EMAIL: admin@twquant.internal
       PGADMIN_DEFAULT_PASSWORD_FILE: /run/secrets/pgadmin_password
     secrets:
       - pgadmin_password
@@ -40,7 +36,6 @@ services:
     restart: unless-stopped
 
 volumes:
-  pg_data:
   pgadmin_data:
 
 secrets:

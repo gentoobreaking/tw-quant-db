@@ -6,3 +6,4 @@ secrets/
 *.db
 *.db-journal
 .pgpass
+pg_data/
