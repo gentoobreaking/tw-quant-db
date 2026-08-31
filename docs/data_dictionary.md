@@ -16,10 +16,25 @@ Stock master data. Updated by tw-quant-pickup from TWSE/TWSE listings.
 | `security_type` | VARCHAR(20) | NO | — | `STOCK`, `ETF`, `WARRANT`, `REIT` |
 | `listed_date` | DATE | YES | — | Date first listed |
 | `active` | BOOLEAN | YES | `true` | Whether the stock is currently active |
+| `needs_manual_review` | BOOLEAN | YES | `false` | 回補失敗標記（backfill 斷點續跑用） |
 | `created_at` | TIMESTAMP | NO | — | Record creation time |
 | `updated_at` | TIMESTAMP | NO | — | Last update time |
-
 **Indexes**: `stocks_pkey` (PK: symbol)
+
+---
+
+### core.trading_calendar
+
+回補缺口偵測用交易日曆（`backfill` 5 天批次、`getMissingDates` 依此判斷交易日，週末/假日跳過）。
+
+| Column | Type | Nullable | Default | Description |
+|--------|------|----------|---------|-------------|
+| `trade_date` | DATE | NO | — | 曆日 |
+| `is_trading` | BOOLEAN | NO | `true` | 是否為交易日 |
+| `day_of_week` | INTEGER | YES | — | 0=週日, 6=週六 |
+
+**Indexes**: PK(trade_date), `idx_core_trading_calendar_is_trading`
+**關聯**: `TRADING_CALENDAR ||--o{ DAILY_PRICES`（backfill 缺口 → daily_prices）
 
 ---
 

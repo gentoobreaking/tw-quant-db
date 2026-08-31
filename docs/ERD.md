@@ -18,8 +18,16 @@ erDiagram
         security_type
         listed_date
         active
+        needs_manual_review
         created_at
         updated_at
+    }
+
+    %% core.trading_calendar (backfill 缺口偵測)
+    TRADING_CALENDAR {
+        trade_date PK
+        is_trading
+        day_of_week
     }
 
     %% core.daily_prices
@@ -250,6 +258,8 @@ erDiagram
     STOCKS ||--o{ MARKET_CONTEXT : "has context for"
     STOCKS ||--o{ UNIVERSE_FLAGS : "has flags for"
     STOCKS ||--o{ MARGIN_TRADING : "has margin data for"
+
+    TRADING_CALENDAR ||--o{ DAILY_PRICES : "defines trading days for backfill"
 
     DAILY_PRICES }o--|| ALERTS : "triggers alerts for"
     DAILY_PRICES }o--|| DECISIONS : "informs decisions about"

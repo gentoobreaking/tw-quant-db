@@ -15,12 +15,14 @@ Tw-quant is a Taiwanese stock market analysis system. Multiple projects (pickup,
 ## Features
 
 - PostgreSQL schema definitions for 5 schemas (`core/`, `pickup/`, `signal/`, `init-scripts/`)
+- **Go backfill service** (`backfill/`): MCP 多源 fallback（local-mcp → twse-mcp → finmind-mcp → yfinance-mcp）自動補齊 `core.daily_prices` 缺口，支援 7d/1mo/5Y、斷點續跑、交易日曆判斷（詳見 [docs/backfill.md](docs/backfill.md)）
 - Migration script (`scripts/migrate_to_core.py`): copies existing pickup data → core schema
 - MCP cache backfill (`scripts/backfill_from_mcp.py`): bulk-imports 4,818 cache entries from tw-quant-mcp's `cache.db` into `core.*` with `source_role='FALLBACK'`
 - Signal backfill (`scripts/backfill_from_signal.py`): imports data from tw-quant-signal SQLite → core
 - Signal-to-PostgreSQL migration (`scripts/migrate_signal_to_pg.py`)
 - Compatibility views for projects with different column naming conventions (`symbol` vs `stock_id`)
 - Idempotent schema creation with `CREATE TABLE IF NOT EXISTS` and `DO $$ ... END $$` constraint guards
+- Shared `tw-quant-network`（`external: true`）與 `tw-quant-mcp` 共用，`docker compose up -d` 自動 7 天回補
 
 ## Architecture
 
@@ -28,19 +30,19 @@ Tw-quant is a Taiwanese stock market analysis system. Multiple projects (pickup,
 tw-quant-db/                    ← this repo (schema + scripts)
 ├── core/schema.sql             ← core.* fact tables + indexes + constraints
 ├── pickup/schema.sql           ← pickup.* business tables
+├── backfill/                   ← Go 回補服務（MCP fallback chain）
 ├── migrations/                 ← incremental SQL migrations
 ├── init-scripts/               ← Docker entrypoint init (schema creation)
 ├── scripts/                    ← Python migration & backfill scripts
-└── docker-compose.yml          ← shared PostgreSQL container
+└── docker-compose.yml          ← shared PostgreSQL + pgAdmin + backfill(7d)
 
+tw-quant-mcp/                   ← MCP fetchers (separate repo, shared tw-quant-network)
+  data/cache.db                 ← 835MB SQLite cache (4,818 entries, 13 datasets)
+  cmd/mcp-server                ← streamable-http :8000, 252 tools
 tw-quant-pickup/                ← pickup pipeline (separate repo)
   collectors/                   ← writes core.* tables (CANONICAL)
   api/                          ← FastAPI with search_path=core,pickup
 
-tw-quant-mcp/                   ← MCP fetchers (separate repo)
-  data/cache.db                 ← 835MB SQLite cache (4,818 entries, 13 datasets)
-
-tw-quant/                       ← tw-quant pipeline (separate repo)
   common/cache.py               ← DiskCache with PostgreSQL/PostgreSQL dual backend
   common/factors.py             ← factor computation
   pipeline_screener.py          ← pipeline entry point
@@ -62,6 +64,10 @@ All `core.*` tables have a `CHECK (source_role IN ('CANONICAL', 'SEMI_OFFICIAL_R
 tw-quant-db/
 ├── core/
 │   └── schema.sql          # 8 core fact tables + indexes + constraints
+├── backfill/               # Go 回補服務（MCP fallback chain, docs/backfill.md）
+│   ├── backfill.go         # 缺口偵測、批次、fallback、checkpoint
+│   ├── sources.go          # local/twse/finmind/yfinance MCP clients
+│   └── go.mod
 ├── pickup/
 │   └── schema.sql          # pickup business tables (cache, factor_scores, etc.)
 ├── init-scripts/
@@ -70,37 +76,51 @@ tw-quant-db/
 │   ├── T011-signal-views.sql     # signal.* read-only views
 │   ├── T017-margin-trading.sql   # core.margin_trading table
 │   └── T018-pickup-cache.sql     # pickup.cache table for DiskCache
+├── docs/
+│   └── backfill.md         # 回補使用手冊
 ├── scripts/
 │   ├── migrate_to_core.py        # pickup → core data migration
 │   ├── backfill_from_mcp.py      # MCP cache.db → core (FALLBACK)
 │   ├── backfill_from_signal.py   # signal SQLite → core
 │   └── migrate_signal_to_pg.py   # signal SQLite → PostgreSQL
-├── docker-compose.yml       # shared PostgreSQL + pgAdmin
+├── docker-compose.yml       # shared PostgreSQL + pgAdmin + backfill(7d, external tw-quant-network)
 └── secrets/                 # gitignored (password files)
 ```
-
 ## Requirements
 
 - PostgreSQL 16 (Docker)
+- Go 1.25+（backfill 服務）
 - Python 3.11+ for scripts
 - `asyncpg` Python package (`pip install asyncpg`)
 
 ## Installation
 
-### 1. Start shared PostgreSQL
+### 1. 準備共享網路與環境變數
+
+```bash
+docker network create tw-quant-network  # 與 tw-quant-mcp 共用（external: true）
+# .env 已含 POSTGRES_PASSWORD / FINMIND_TOKEN（gitignored），若更新：
+echo "POSTGRES_PASSWORD=$(cat secrets/postgres_password.txt)" > .env
+echo "FINMIND_TOKEN=$(cat ~/.finmind_token)" >> .env
+```
+
+### 2. 啟動共享 PostgreSQL（自動 7 天回補）
 
 ```bash
 cd tw-quant-db
 docker compose up -d
+# 啟動：postgres:5432 + pgadmin:5050 + backfill(7d 全市場實寫，local-mcp 優先)
+# 需 tw-quant-mcp 已在別專案 `docker compose up -d`（同 tw-quant-network）
 ```
 
 This starts:
 - PostgreSQL on port 5432 (user: `twquant`, database: `twquant_shared`)
 - pgAdmin on port 5450 (email: `admin@twquant.local`)
+- backfill: 近 7 天全市場 `core.daily_prices` 回補（`BACKFILL_ALL_LISTED=true`）
 
 Secrets are mounted from `./secrets/` (gitignored). See `secrets/` for required files.
 
-### 2. Apply schema
+### 3. Apply schema
 
 The Docker entrypoint automatically runs `init-scripts/01-create-schemas.sql` on first startup, creating all 5 schemas.
 
@@ -123,6 +143,11 @@ DATABASE_URL="postgresql://twquant:<password>@localhost:5432/twquant_shared" \
 |---|---|---|
 | `DATABASE_URL` | `postgresql://localhost:5432/twquant_shared` | PostgreSQL connection string |
 | `MCP_CACHE_DB` | `~/Projects/tw-quant-mcp/data/cache.db` | Path to tw-quant-mcp cache.db |
+| `MCP_HOST` | `http://tw-quant-mcp:8000` | tw-quant-mcp streamable-http |
+| `FINMIND_TOKEN` | - | FinMind API token (fallback 2) |
+| `BACKFILL_ALL_LISTED` | `true` (compose 預設) | 全市場回補 |
+| `STOCK_IDS` | - | 指定 `2330,0050` |
+| `STOCKS_FILE` | - | 外部清單每行一檔 |
 
 ### Database Connection
 
@@ -135,15 +160,35 @@ Password is in `secrets/postgres_password.txt` (gitignored).
 ## Quick Start
 
 ```bash
-# 1. Start PostgreSQL
-cd tw-quant-db && docker compose up -d
+# 1. 啟動共享網路與 tw-quant-mcp（別專案）
+docker network create tw-quant-network
+cd ~/Projects/tw-quant-mcp && docker compose up -d
 
-# 2. Run MCP cache backfill (4,818 entries → core.*)
-DATABASE_URL="postgresql://twquant:<password>@localhost:5432/twquant_shared" \
-  python3 scripts/backfill_from_mcp.py
+# 2. 啟動 tw-quant-db（自動 7 天全市場回補）
+cd ~/Projects/tw-quant-db && docker compose up -d
+# → postgres:5432 + pgadmin:5050 + backfill(7d, local-mcp 優先)
+
+# 3. 手動回補（覆蓋參數）
+docker compose run --rm backfill --stock 2330 --dry-run --range 1mo
+docker compose run --rm backfill --range 1Y --sources mcp
+# 詳見 docs/backfill.md
 ```
 
 ## Usage
+
+### Go 回補（MCP fallback chain → core.daily_prices）
+
+`backfill/` 為 Go 二進位，透過 MCP 多源自動補齊缺口，`coverage ≥0.7` 才寫入，`trading_calendar` 判定交易日，`ON CONFLICT DO UPDATE` 保 idempotent。
+
+```bash
+# 全市場近 7 天（compose 預設，up 即自動跑）
+docker compose run --rm backfill
+# 單檔試跑 / 指定區間 / 斷點續跑
+docker compose run --rm backfill --stock 2330 --dry-run --range 1mo
+docker compose run --rm backfill --stock-ids "2330,0050" --start 2025-08-25 --end 2026-08-28 --sources mcp
+docker compose run --rm backfill --range 1Y --sources mcp --resume
+```
+詳見 [docs/backfill.md](docs/backfill.md)。
 
 ### Backfill from MCP cache
 
