@@ -1197,7 +1197,16 @@ func main() {
 
 	reportDir := "/app/data"
 	if _, err := os.Stat(reportDir); os.IsNotExist(err) {
-		reportDir = "."
+		// Host 執行時：backfill/ 目錄下跑，backfill_data 在上一層
+		for _, cand := range []string{"backfill_data", "../backfill_data"} {
+			if _, err := os.Stat(cand); err == nil {
+				reportDir = cand
+				break
+			}
+		}
+		if reportDir == "/app/data" {
+			reportDir = "."
+		}
 	}
 	reportPath := reportDir + "/backfill_report.json"
 	tsPath := fmt.Sprintf("%s/backfill_report_%s.json", reportDir, time.Now().Format("20060102_150405"))
@@ -1205,7 +1214,14 @@ func main() {
 		if err := os.WriteFile(p, output, 0644); err != nil {
 			fmt.Fprintf(os.Stderr, "write report %s failed: %v\n", p, err)
 		} else {
-			fmt.Fprintf(os.Stderr, "report written to %s\n", p)
+			// 顯示宿主機可見路徑（/app/data 與 ../backfill_data 皆映射為 backfill_data）
+			displayPath := p
+			if reportDir == "/app/data" {
+				displayPath = "backfill_data/" + p[len("/app/data/"):]
+			} else if reportDir == "../backfill_data" {
+				displayPath = "backfill_data/" + p[len("../backfill_data/"):]
+			}
+			fmt.Fprintf(os.Stderr, "report written to %s\n", displayPath)
 		}
 	}
 }
