@@ -92,11 +92,13 @@ services:
       - DATABASE_URL=postgresql://twquant:${POSTGRES_PASSWORD}@tw-quant-db:5432/twquant_shared?sslmode=disable
       - FINMIND_TOKEN=${FINMIND_TOKEN:-}
       - BACKFILL_API_URL=http://tw-quant-backfill-api:8080
+      - HOME=/tmp
     volumes:
       - ./scripts/seed_all_listed.py:/app/seed_all_listed.py:ro
       - ./scripts/progressive-init.py:/app/progressive-init.py:ro
     command: >
       sh -c "pip install -q httpx psycopg[binary] && python /app/progressive-init.py"
+    user: "65534:65534"
     depends_on:
       tw-quant-db:
         condition: service_healthy
