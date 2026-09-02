@@ -250,7 +250,7 @@ func markNeedsReview(ctx context.Context, db *sql.DB, symbol string) error {
 // upsertPrices writes price data to core.daily_prices.
 // Canonical sources (TWSE official): PIT semantics - DO NOTHING for existing CANONICAL,
 // but allow upgrading FALLBACK rows (WHERE source_role='FALLBACK').
-// Fallback sources: DO UPDATE only where existing row is FALLBACK.
+// Fallback sources: DO UPDATE only where existing row is FALLBACK (source_role stays FALLBACK).
 func upsertPrices(ctx context.Context, db *sql.DB, symbol string, rows []PriceData, isCanonical bool) (int, error) {
 	if len(rows) == 0 {
 		return 0, nil
@@ -264,6 +264,49 @@ func upsertPrices(ctx context.Context, db *sql.DB, symbol string, rows []PriceDa
 		sourceRole = "CANONICAL"
 	}
 
+	// Build SET clause: CANONICAL upgrades source_role, FALLBACK keeps it
+	sqliteSetExtra := ""
+	pgSetExtra := ""
+	if isCanonical {
+		sqliteSetExtra = ",\n  source_role = EXCLUDED.source_role"
+		pgSetExtra = ",\n  source_role = EXCLUDED.source_role"
+	}
+
+	var sqliteQuery, pgQuery string
+	sqliteQuery = fmt.Sprintf(`
+INSERT INTO core_daily_prices
+  (symbol, trade_date, open, high, low, close, volume, adjusted_close,
+   source, data_date, freshness, source_role)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'backfill_go', date('now'), 'FALLBACK', ?)
+ON CONFLICT(symbol, trade_date) DO UPDATE SET
+  open = EXCLUDED.open,
+  high = EXCLUDED.high,
+  low = EXCLUDED.low,
+  close = EXCLUDED.close,
+  volume = EXCLUDED.volume,
+  adjusted_close = EXCLUDED.adjusted_close,
+  source = EXCLUDED.source,
+  data_date = EXCLUDED.data_date,
+  freshness = EXCLUDED.freshness%s
+WHERE core_daily_prices.source_role = 'FALLBACK'`, sqliteSetExtra)
+
+	pgQuery = fmt.Sprintf(`
+INSERT INTO core.daily_prices
+  (symbol, trade_date, open, high, low, close, volume, adjusted_close,
+   source, data_date, freshness, source_role)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'backfill_go', CURRENT_DATE, 'FALLBACK', $9)
+ON CONFLICT (symbol, trade_date) DO UPDATE SET
+  open = EXCLUDED.open,
+  high = EXCLUDED.high,
+  low = EXCLUDED.low,
+  close = EXCLUDED.close,
+  volume = EXCLUDED.volume,
+  adjusted_close = EXCLUDED.adjusted_close,
+  source = EXCLUDED.source,
+  data_date = EXCLUDED.data_date,
+  freshness = EXCLUDED.freshness%s
+WHERE core.daily_prices.source_role = 'FALLBACK'`, pgSetExtra)
+
 	for i := 0; i < len(rows); i += batchSize {
 		end := i + batchSize
 		if end > len(rows) {
@@ -273,87 +316,9 @@ func upsertPrices(ctx context.Context, db *sql.DB, symbol string, rows []PriceDa
 		for _, r := range batch {
 			var err error
 			if isSQLite {
-				if isCanonical {
-					// CANONICAL: PIT - DO NOTHING if CANONICAL exists, but upgrade FALLBACK
-					_, err = db.ExecContext(ctx, `
-INSERT INTO core_daily_prices
-  (symbol, trade_date, open, high, low, close, volume, adjusted_close,
-   source, data_date, freshness, source_role)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'backfill_go', date('now'), 'FALLBACK', ?)
-ON CONFLICT(symbol, trade_date) DO UPDATE SET
-  open = EXCLUDED.open,
-  high = EXCLUDED.high,
-  low = EXCLUDED.low,
-  close = EXCLUDED.close,
-  volume = EXCLUDED.volume,
-  adjusted_close = EXCLUDED.adjusted_close,
-  source = EXCLUDED.source,
-  data_date = EXCLUDED.data_date,
-  freshness = EXCLUDED.freshness,
-  source_role = EXCLUDED.source_role
-WHERE core_daily_prices.source_role = 'FALLBACK'
-`, symbol, r.TradeDate, r.Open, r.High, r.Low, r.Close, r.Volume, r.AdjustedClose, sourceRole)
-				} else {
-					// FALLBACK: only update if existing is FALLBACK
-					_, err = db.ExecContext(ctx, `
-INSERT INTO core_daily_prices
-  (symbol, trade_date, open, high, low, close, volume, adjusted_close,
-   source, data_date, freshness, source_role)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'backfill_go', date('now'), 'FALLBACK', ?)
-ON CONFLICT(symbol, trade_date) DO UPDATE SET
-  open = EXCLUDED.open,
-  high = EXCLUDED.high,
-  low = EXCLUDED.low,
-  close = EXCLUDED.close,
-  volume = EXCLUDED.volume,
-  adjusted_close = EXCLUDED.adjusted_close,
-  source = EXCLUDED.source,
-  data_date = EXCLUDED.data_date,
-  freshness = EXCLUDED.freshness
-WHERE core_daily_prices.source_role = 'FALLBACK'
-`, symbol, r.TradeDate, r.Open, r.High, r.Low, r.Close, r.Volume, r.AdjustedClose, sourceRole)
-				}
+				_, err = db.ExecContext(ctx, sqliteQuery, symbol, r.TradeDate, r.Open, r.High, r.Low, r.Close, r.Volume, r.AdjustedClose, sourceRole)
 			} else {
-				if isCanonical {
-					// CANONICAL: PIT - DO NOTHING if CANONICAL exists, but upgrade FALLBACK
-					_, err = db.ExecContext(ctx, `
-INSERT INTO core.daily_prices
-  (symbol, trade_date, open, high, low, close, volume, adjusted_close,
-   source, data_date, freshness, source_role)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'backfill_go', CURRENT_DATE, 'FALLBACK', $9)
-ON CONFLICT (symbol, trade_date) DO UPDATE SET
-  open = EXCLUDED.open,
-  high = EXCLUDED.high,
-  low = EXCLUDED.low,
-  close = EXCLUDED.close,
-  volume = EXCLUDED.volume,
-  adjusted_close = EXCLUDED.adjusted_close,
-  source = EXCLUDED.source,
-  data_date = EXCLUDED.data_date,
-  freshness = EXCLUDED.freshness,
-  source_role = EXCLUDED.source_role
-WHERE core.daily_prices.source_role = 'FALLBACK'
-`, symbol, r.TradeDate, r.Open, r.High, r.Low, r.Close, r.Volume, r.AdjustedClose, sourceRole)
-				} else {
-					// FALLBACK: only update if existing is FALLBACK
-					_, err = db.ExecContext(ctx, `
-INSERT INTO core.daily_prices
-  (symbol, trade_date, open, high, low, close, volume, adjusted_close,
-   source, data_date, freshness, source_role)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'backfill_go', CURRENT_DATE, 'FALLBACK', $9)
-ON CONFLICT (symbol, trade_date) DO UPDATE SET
-  open = EXCLUDED.open,
-  high = EXCLUDED.high,
-  low = EXCLUDED.low,
-  close = EXCLUDED.close,
-  volume = EXCLUDED.volume,
-  adjusted_close = EXCLUDED.adjusted_close,
-  source = EXCLUDED.source,
-  data_date = EXCLUDED.data_date,
-  freshness = EXCLUDED.freshness
-WHERE core.daily_prices.source_role = 'FALLBACK'
-`, symbol, r.TradeDate, r.Open, r.High, r.Low, r.Close, r.Volume, r.AdjustedClose, sourceRole)
-				}
+				_, err = db.ExecContext(ctx, pgQuery, symbol, r.TradeDate, r.Open, r.High, r.Low, r.Close, r.Volume, r.AdjustedClose, sourceRole)
 			}
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "row upsert failed for %s %s: %v\n", symbol, r.TradeDate.Format("2006-01-02"), err)
