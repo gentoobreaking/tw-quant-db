@@ -471,7 +471,14 @@ func loadStockList(ctx context.Context, db *sql.DB, opts *BackfillOptions) ([]st
 			}
 			ids = append(ids, s)
 		}
-		return ids, rows.Err()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		if len(ids) == 0 {
+			fmt.Fprintf(os.Stderr, "[WARN] core.stocks empty with BACKFILL_ALL_LISTED=true, falling back to default [2330 0050 2317]\n")
+			return []string{"2330", "0050", "2317"}, nil
+		}
+		return ids, nil
 	}
 	return []string{"2330", "0050", "2317"}, nil
 }
@@ -677,7 +684,7 @@ func runBackfill(ctx context.Context, db *sql.DB, opts BackfillOptions) (*Backfi
 		wg.Wait()
 
 		// Save checkpoint after each month (with last stock info).
-		if !opts.DryRun {
+		if !opts.DryRun && len(stocks) > 0 {
 			currentProgress.LastStock = stocks[len(stocks)-1]
 			currentProgress.LastMonth = monthKey
 			currentProgress.LastBatch = ""
