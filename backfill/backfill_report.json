@@ -1,0 +1,15 @@
+{
+  "start_date": "2026-08-02",
+  "end_date": "2026-09-02",
+  "total_stocks": 3,
+  "total_rows": 0,
+  "sources": [
+    {
+      "source": "fallback-chain",
+      "success_count": 0,
+      "failure_count": 3,
+      "rows_fetched": 0
+    }
+  ],
+  "completion_pct": 0
+}
