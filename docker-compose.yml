@@ -22,7 +22,7 @@ services:
   # One-shot backfill service for core.daily_prices (auto 7d on up)
   # Requires tw-quant-mcp running separately (tw-quant-mcp/docker-compose.yml)
   # and shared network tw-quant-network (docker network create tw-quant-network)
-  backfill:
+  tw-quant-backfill:
     build:
       context: .
       dockerfile: Dockerfile.backfill
