@@ -27,10 +27,10 @@ services:
   # Requires tw-quant-mcp running separately (tw-quant-mcp/docker-compose.yml)
   # and shared network tw-quant-network (docker network create tw-quant-network)
   tw-quant-backfill:
+    profiles: ["manual"]
     build:
       context: .
       dockerfile: Dockerfile.backfill
-    image: tw-quant-backfill:latest
     container_name: tw-quant-backfill
     hostname: tw-quant-backfill
     environment:
@@ -83,7 +83,29 @@ services:
       timeout: 5s
       retries: 5
 
-  # pgAdmin for schema/DB inspection
+  # Progressive init: seed stocks + 1d→5y 自動回補（docker compose up 自動觸發）
+  tw-quant-init:
+    image: python:3.12-alpine
+    container_name: tw-quant-init
+    hostname: tw-quant-init
+    environment:
+      - DATABASE_URL=postgresql://twquant:${POSTGRES_PASSWORD}@tw-quant-db:5432/twquant_shared?sslmode=disable
+      - FINMIND_TOKEN=${FINMIND_TOKEN:-}
+      - BACKFILL_API_URL=http://tw-quant-backfill-api:8080
+    volumes:
+      - ./scripts/seed_all_listed.py:/app/seed_all_listed.py:ro
+      - ./scripts/progressive-init.py:/app/progressive-init.py:ro
+    command: >
+      sh -c "pip install -q httpx psycopg[binary] && python /app/progressive-init.py"
+    depends_on:
+      tw-quant-db:
+        condition: service_healthy
+      tw-quant-backfill-api:
+        condition: service_healthy
+    networks:
+      - tw-quant-network
+    restart: "no"
+
   tw-quant-pgadmin:
     image: dpage/pgadmin4:latest
     container_name: tw-quant-pgadmin
