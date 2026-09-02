@@ -267,7 +267,7 @@ func TestUpsertPricesIdempotent(t *testing.T) {
 	}
 
 	// First insert.
-	n1, err := upsertPrices(context.Background(), db, "2330", rows)
+	n1, err := upsertPrices(context.Background(), db, "2330", rows, true)
 	if err != nil {
 		t.Fatalf("first upsert: %v", err)
 	}
@@ -276,7 +276,7 @@ func TestUpsertPricesIdempotent(t *testing.T) {
 	}
 
 	// Second insert (idempotent — should update, not duplicate).
-	n2, err := upsertPrices(context.Background(), db, "2330", rows)
+	n2, err := upsertPrices(context.Background(), db, "2330", rows, true)
 	if err != nil {
 		t.Fatalf("second upsert: %v", err)
 	}

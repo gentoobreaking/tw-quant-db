@@ -1,6 +1,8 @@
 package main
 
 import (
+	"net/http"
+	"github.com/gin-gonic/gin"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -718,6 +720,341 @@ func runBackfill(ctx context.Context, db *sql.DB, opts BackfillOptions) (*Backfi
 	return report, nil
 }
 
+
+// ========== Job Management (for HTTP API) ==========
+
+type JobStatus string
+
+const (
+	JobStatusPending   JobStatus = "pending"
+	JobStatusRunning   JobStatus = "running"
+	JobStatusCompleted JobStatus = "completed"
+	JobStatusFailed    JobStatus = "failed"
+)
+
+type BackfillJob struct {
+	mu            sync.RWMutex
+	ID            string                 `json:"job_id"`
+	Status        JobStatus              `json:"status"`
+	Options       BackfillOptions        `json:"options"`
+	Progress      JobProgress            `json:"progress"`
+	Report        *BackfillReport        `json:"report,omitempty"`
+	Error         string                 `json:"error,omitempty"`
+	CreatedAt     time.Time              `json:"created_at"`
+	StartedAt     *time.Time             `json:"started_at,omitempty"`
+	CompletedAt   *time.Time             `json:"completed_at,omitempty"`
+	LastUpdatedAt time.Time              `json:"last_updated_at"`
+}
+
+type JobProgress struct {
+	TotalStocks      int    `json:"total_stocks"`
+	CompletedStocks  int    `json:"completed_stocks"`
+	CurrentStock     string `json:"current_stock"`
+	CurrentMonth     string `json:"current_month"`
+	CurrentBatch     string `json:"current_batch"`
+}
+
+type JobManager struct {
+	mu   sync.RWMutex
+	jobs map[string]*BackfillJob
+}
+
+func NewJobManager() *JobManager {
+	return &JobManager{jobs: make(map[string]*BackfillJob)}
+}
+
+func (jm *JobManager) CreateJob(opts BackfillOptions) *BackfillJob {
+	job := &BackfillJob{
+		ID:            fmt.Sprintf("bf-%d", time.Now().UnixNano()),
+		Status:        JobStatusPending,
+		Options:       opts,
+		CreatedAt:     time.Now(),
+		LastUpdatedAt: time.Now(),
+	}
+	jm.mu.Lock()
+	jm.jobs[job.ID] = job
+	jm.mu.Unlock()
+	return job
+}
+
+func (jm *JobManager) GetJob(id string) (*BackfillJob, bool) {
+	jm.mu.RLock()
+	defer jm.mu.RUnlock()
+	job, ok := jm.jobs[id]
+	return job, ok
+}
+
+func (jm *JobManager) GetLatestJob() *BackfillJob {
+	jm.mu.RLock()
+	defer jm.mu.RUnlock()
+	var latest *BackfillJob
+	for _, job := range jm.jobs {
+		if latest == nil || job.CreatedAt.After(latest.CreatedAt) {
+			latest = job
+		}
+	}
+	return latest
+}
+
+func (j *BackfillJob) UpdateStatus(status JobStatus) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.Status = status
+	now := time.Now()
+	j.LastUpdatedAt = now
+	switch status {
+	case JobStatusRunning:
+		j.StartedAt = &now
+	case JobStatusCompleted, JobStatusFailed:
+		j.CompletedAt = &now
+	}
+}
+
+func (j *BackfillJob) UpdateProgress(progress JobProgress) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.Progress = progress
+	j.LastUpdatedAt = time.Now()
+}
+
+func (j *BackfillJob) SetReport(report *BackfillReport) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.Report = report
+	j.LastUpdatedAt = time.Now()
+}
+
+func (j *BackfillJob) SetError(err string) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.Error = err
+	j.Status = JobStatusFailed
+	now := time.Now()
+	j.CompletedAt = &now
+	j.LastUpdatedAt = now
+}
+
+func (j *BackfillJob) ToResponse() map[string]any {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	resp := map[string]any{
+		"job_id":           j.ID,
+		"status":           j.Status,
+		"progress":         j.Progress,
+		"created_at":       j.CreatedAt,
+		"last_updated_at":  j.LastUpdatedAt,
+	}
+	if j.StartedAt != nil {
+		resp["started_at"] = j.StartedAt
+	}
+	if j.CompletedAt != nil {
+		resp["completed_at"] = j.CompletedAt
+	}
+	if j.Report != nil {
+		resp["report"] = j.Report
+	}
+	if j.Error != "" {
+		resp["error"] = j.Error
+	}
+	return resp
+}
+
+// ========== HTTP API Types ==========
+
+type TriggerRequest struct {
+	Range     string   `json:"range" binding:"omitempty"`
+	Resume    bool     `json:"resume"`
+	StockIDs  []string `json:"stock_ids,omitempty"`
+	Strategy  string   `json:"strategy,omitempty"`
+	Sources   string   `json:"sources,omitempty"`
+	DryRun    bool     `json:"dry_run,omitempty"`
+}
+
+type TriggerResponse struct {
+	JobID  string `json:"job_id"`
+	Status string `json:"status"`
+}
+
+type ErrorResponse struct {
+	Error string `json:"error"`
+	Code   int    `json:"code"`
+}
+
+type HealthResponse struct {
+	Status    string    `json:"status"`
+	Timestamp time.Time `json:"timestamp"`
+	Version   string    `json:"version"`
+}
+
+// ========== API Server ==========
+
+type APIServer struct {
+	router     *gin.Engine
+	jobManager *JobManager
+	db         *sql.DB
+	workerDone chan struct{}
+	wg         sync.WaitGroup
+}
+
+func NewAPIServer(jobManager *JobManager, db *sql.DB) *APIServer {
+	gin.SetMode(gin.ReleaseMode)
+	router := gin.New()
+	router.Use(gin.Recovery())
+
+	s := &APIServer{
+		router:     router,
+		jobManager: jobManager,
+		db:         db,
+		workerDone: make(chan struct{}),
+	}
+	s.setupRoutes()
+	return s
+}
+
+func (s *APIServer) setupRoutes() {
+	s.router.GET("/health", s.healthHandler)
+
+	api := s.router.Group("/api/v1")
+	{
+		backfill := api.Group("/backfill")
+		{
+			backfill.POST("/trigger", s.triggerHandler)
+			backfill.GET("/status/:job_id", s.statusHandler)
+			backfill.GET("/latest", s.latestHandler)
+		}
+	}
+}
+
+func (s *APIServer) healthHandler(c *gin.Context) {
+	c.JSON(http.StatusOK, HealthResponse{
+		Status:    "ok",
+		Timestamp: time.Now(),
+		Version:   "1.0.0",
+	})
+}
+
+func (s *APIServer) triggerHandler(c *gin.Context) {
+	var req TriggerRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, ErrorResponse{
+			Error: err.Error(),
+			Code:  http.StatusBadRequest,
+		})
+		return
+	}
+
+	// Check if there's already a running job
+	s.jobManager.mu.RLock()
+	for _, job := range s.jobManager.jobs {
+		if job.Status == JobStatusRunning || job.Status == JobStatusPending {
+			s.jobManager.mu.RUnlock()
+			c.JSON(http.StatusConflict, ErrorResponse{
+				Error: "Another backfill job is already running/pending",
+				Code:  http.StatusConflict,
+			})
+			return
+		}
+	}
+	s.jobManager.mu.RUnlock()
+
+	opts := BackfillOptions{
+		DryRun:    req.DryRun,
+		Strategy:  req.Strategy,
+		Range:     req.Range,
+		StockIDs:  req.StockIDs,
+		Sources:   req.Sources,
+		Resume:    req.Resume,
+	}
+	if opts.Strategy == "" {
+		opts.Strategy = "monthly"
+	}
+	if opts.Range == "" {
+		opts.Range = "5Y"
+	}
+	if opts.Sources == "" {
+		opts.Sources = "both"
+	}
+
+	job := s.jobManager.CreateJob(opts)
+
+	s.wg.Add(1)
+	go s.runBackfillWorker(job)
+
+	c.JSON(http.StatusAccepted, TriggerResponse{
+		JobID:  job.ID,
+		Status: "started",
+	})
+}
+
+func (s *APIServer) statusHandler(c *gin.Context) {
+	jobID := c.Param("job_id")
+	job, ok := s.jobManager.GetJob(jobID)
+	if !ok {
+		c.JSON(http.StatusNotFound, ErrorResponse{
+			Error: "Job not found",
+			Code:  http.StatusNotFound,
+		})
+		return
+	}
+	c.JSON(http.StatusOK, job.ToResponse())
+}
+
+func (s *APIServer) latestHandler(c *gin.Context) {
+	job := s.jobManager.GetLatestJob()
+	if job == nil {
+		c.JSON(http.StatusNotFound, ErrorResponse{
+			Error: "No jobs found",
+			Code:  http.StatusNotFound,
+		})
+		return
+	}
+	c.JSON(http.StatusOK, job.ToResponse())
+}
+
+func (s *APIServer) runBackfillWorker(job *BackfillJob) {
+	defer s.wg.Done()
+
+	job.UpdateStatus(JobStatusRunning)
+
+	ctx := context.Background()
+
+	report, err := runBackfill(ctx, s.db, job.Options)
+	if err != nil {
+		job.SetError(err.Error())
+		fmt.Fprintf(os.Stderr, "[JOB %s] backfill failed: %v\n", job.ID, err)
+		return
+	}
+
+	job.SetReport(report)
+	job.UpdateStatus(JobStatusCompleted)
+	fmt.Fprintf(os.Stderr, "[JOB %s] backfill completed: %d rows, %.1f%% completion\n", job.ID, report.TotalRows, report.Completion)
+}
+
+func (s *APIServer) Run(addr string) error {
+	server := &http.Server{
+		Addr:    addr,
+		Handler: s.router,
+	}
+
+	go func() {
+		<-s.workerDone
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		server.Shutdown(ctx)
+	}()
+
+	fmt.Fprintf(os.Stderr, "[API] Starting HTTP server on %s\n", addr)
+	return server.ListenAndServe()
+}
+
+func (s *APIServer) Shutdown() {
+	close(s.workerDone)
+	s.wg.Wait()
+}
+
+
+
+
 func main() {
 	var (
 		startDateStr = flag.String("start", "", "Start date (YYYY-MM-DD)")
@@ -729,47 +1066,18 @@ func main() {
 		manualStock  = flag.String("stock", "", "Single stock symbol override")
 		dryRun       = flag.Bool("dry-run", false, "Dry run mode — no writes")
 		resume       = flag.Bool("resume", false, "Resume from checkpoint")
+		mode         = flag.String("mode", "cli", "Run mode: cli or server")
+		port         = flag.String("port", "8080", "HTTP server port (server mode)")
 	)
 	flag.Parse()
 
-	var start, end time.Time
-	if *startDateStr != "" {
-		start, _ = time.Parse("2006-01-02", *startDateStr)
-	}
-	if *endDateStr != "" {
-		end, _ = time.Parse("2006-01-02", *endDateStr)
+	// Detect mode: CLI flags, env var, or default
+	runMode := *mode
+	if runMode == "cli" && os.Getenv("MODE") == "server" {
+		runMode = "server"
 	}
 
-	var ids []string
-	if *stockIDs != "" {
-		for _, s := range strings.Split(*stockIDs, ",") {
-			s = strings.TrimSpace(s)
-			if s != "" {
-				ids = append(ids, s)
-			}
-		}
-	}
-	if *manualStock != "" {
-		ids = []string{*manualStock}
-	}
-
-	opts := BackfillOptions{
-		StartDate: start,
-		EndDate:   end,
-		DryRun:    *dryRun,
-		Strategy:  *strategy,
-		Range:     *rangeStr,
-		StockIDs:  ids,
-		Sources:   *sources,
-		Resume:    *resume,
-	}
-
-	if *sources != "mcp" && *sources != "http" && *sources != "both" {
-		fmt.Fprintf(os.Stderr, "--sources must be mcp, http, or both (got: %s)\n", *sources)
-		os.Exit(1)
-	}
-
-	// Resolve DB driver: DATABASE_URL (pgx) or TW_QUANT_DB_PATH (sqlite) per spec §10.
+	// Resolve DB driver first (needed for both modes)
 	dsn := os.Getenv("DATABASE_URL")
 	var dbDriver string
 	if dsn == "" {
@@ -841,6 +1149,71 @@ func main() {
 		}
 	}
 
+	// Create job manager (shared for both modes)
+	jobManager := NewJobManager()
+
+	// Branch by mode
+	if runMode == "server" {
+		// ----- HTTP Server Mode -----
+		apiServer := NewAPIServer(jobManager, db)
+
+		// Signal handling for graceful shutdown
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+		go func() {
+			<-sigCh
+			fmt.Fprintf(os.Stderr, "\n[API] Shutting down...\n")
+			apiServer.Shutdown()
+		}()
+
+		addr := ":" + *port
+		if err := apiServer.Run(addr); err != nil && err != http.ErrServerClosed {
+			fmt.Fprintf(os.Stderr, "[API] Server error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "[API] Server stopped\n")
+		return
+	}
+
+	// ----- CLI Mode (original behavior) -----
+	var start, end time.Time
+	if *startDateStr != "" {
+		start, _ = time.Parse("2006-01-02", *startDateStr)
+	}
+	if *endDateStr != "" {
+		end, _ = time.Parse("2006-01-02", *endDateStr)
+	}
+
+	var ids []string
+	if *stockIDs != "" {
+		for _, s := range strings.Split(*stockIDs, ",") {
+			s = strings.TrimSpace(s)
+			if s != "" {
+				ids = append(ids, s)
+			}
+		}
+	}
+	if *manualStock != "" {
+		ids = []string{*manualStock}
+	}
+
+	opts := BackfillOptions{
+		StartDate: start,
+		EndDate:   end,
+		DryRun:    *dryRun,
+		Strategy:  *strategy,
+		Range:     *rangeStr,
+		StockIDs:  ids,
+		Sources:   *sources,
+		Resume:    *resume,
+	}
+
+	if *sources != "mcp" && *sources != "http" && *sources != "both" {
+		fmt.Fprintf(os.Stderr, "--sources must be mcp, http, or both (got: %s)\n", *sources)
+		os.Exit(1)
+	}
+
 	report, err := runBackfill(ctx, db, opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "backfill: %v\n", err)
@@ -849,13 +1222,12 @@ func main() {
 	output, _ := json.MarshalIndent(report, "", "  ")
 	_, _ = os.Stderr.WriteString(string(output))
 	os.Stderr.WriteString("\n")
-	// 持久化彙整報告（各通路筆數/時間範圍/完成率）
+
 	reportDir := "/app/data"
 	if _, err := os.Stat(reportDir); os.IsNotExist(err) {
 		reportDir = "."
 	}
 	reportPath := reportDir + "/backfill_report.json"
-	// 同時寫 timestamp 檔以保留歷史
 	tsPath := fmt.Sprintf("%s/backfill_report_%s.json", reportDir, time.Now().Format("20060102_150405"))
 	for _, p := range []string{reportPath, tsPath} {
 		if err := os.WriteFile(p, output, 0644); err != nil {
