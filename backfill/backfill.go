@@ -8,23 +8,28 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "modernc.org/sqlite"
 )
+
 var checkpointFilename = "backfill_checkpoint.json"
 
 const (
-	qualityThreshold      = 0.7
-	maxRetries            = 2
-	rateLimitRetryDelay   = 60 * time.Second
-	connectionRetryDelay  = 10 * time.Second
-	minInterBatchDelay    = 2 * time.Second
-	maxInterBatchDelay    = 5 * time.Second
-	maxConcurrentStocks   = 10
+	qualityThreshold       = 0.7
+	maxRetries             = 2
+	rateLimitRetryDelay    = 60 * time.Second
+	connectionRetryDelay   = 10 * time.Second
+	minInterBatchDelay     = 2 * time.Second
+	maxInterBatchDelay     = 5 * time.Second
+	maxConcurrentStocks    = 10
+	mcpCallTimeout         = 90 * time.Second // Per MCP call timeout
+	checkpointSaveInterval = 30 * time.Second // Save checkpoint periodically
 )
 
 // sourceQuality weights per spec §4 (Table: 1.0, 0.9, 0.7, 0.5).
@@ -55,7 +60,6 @@ type BackfillOptions struct {
 	Resume     bool
 }
 
-
 // MonthInterval is a date range bounded by month boundaries.
 type MonthInterval struct {
 	Start time.Time
@@ -64,8 +68,11 @@ type MonthInterval struct {
 
 // checkpoint tracks progress for resume.
 type checkpoint struct {
-	LastStock string    `json:"last_stock"`
-	LastMonth string    `json:"last_month"`
+	LastStock    string    `json:"last_stock"`
+	LastMonth    string    `json:"last_month"`
+	LastBatch    string    `json:"last_batch,omitempty"`  // batch start date
+	LastStockIdx int       `json:"last_stock_idx,omitempty"` // index in stocks slice
+	UpdatedAt    time.Time `json:"updated_at,omitempty"`    // last save time
 }
 
 func recordSourceStats(m map[string]*SourceStats, name string, success, fail int) {
@@ -147,6 +154,7 @@ func driverByDSN() (string, bool) {
 	}
 	return "", false
 }
+
 // getMissingDates queries core.trading_calendar (or weekend fallback) for missing dates per spec §4.
 // Supports both PostgreSQL and SQLite (TW_QUANT_DB_PATH) dialects.
 func getMissingDates(ctx context.Context, db *sql.DB, symbol string, start, end time.Time) ([]time.Time, error) {
@@ -175,7 +183,7 @@ WHERE dp.trade_date IS NULL
 `
 		rows, err = db.QueryContext(ctx, query, start.Format("2006-01-02"), end.Format("2006-01-02"), symbol)
 	} else {
-	query = `
+		query = `
 WITH RECURSIVE date_series(d) AS (
     VALUES ($1::date)
   UNION ALL
@@ -452,6 +460,47 @@ func runBackfill(ctx context.Context, db *sql.DB, opts BackfillOptions) (*Backfi
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, maxConcurrentStocks)
 
+	// Signal handling for graceful shutdown.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+
+	// Periodic checkpoint saver.
+	checkpointTicker := time.NewTicker(checkpointSaveInterval)
+	defer checkpointTicker.Stop()
+
+	// Current progress for checkpoint (protected by mu).
+	currentProgress := checkpoint{}
+	if cp != nil {
+		currentProgress = *cp
+	}
+
+	// Goroutine to save checkpoint on signal or ticker.
+	go func() {
+		for {
+			select {
+			case <-sigCh:
+				fmt.Fprintf(os.Stderr, "\n[INFO] Signal received, saving checkpoint...\n")
+				mu.Lock()
+				cpCopy := currentProgress
+				mu.Unlock()
+				if err := saveCheckpoint(cpCopy); err != nil {
+					fmt.Fprintf(os.Stderr, "[WARN] checkpoint save failed: %v\n", err)
+				}
+				os.Exit(1)
+			case <-checkpointTicker.C:
+				mu.Lock()
+				cpCopy := currentProgress
+				mu.Unlock()
+				if err := saveCheckpoint(cpCopy); err != nil {
+					fmt.Fprintf(os.Stderr, "[WARN] periodic checkpoint save failed: %v\n", err)
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
 	for _, month := range intervals {
 		monthKey := month.Start.Format("2006-01")
 		if opts.Resume && cp != nil && (cp.LastMonth == monthKey) {
@@ -460,12 +509,28 @@ func runBackfill(ctx context.Context, db *sql.DB, opts BackfillOptions) (*Backfi
 		}
 
 		batches := splitIntoBatches(month.Start, month.End, 5)
-		for _, stock := range stocks {
-			if opts.Resume && cp != nil && cp.LastStock == stock && cp.LastMonth == monthKey {
-				fmt.Fprintf(os.Stderr, "[INFO] resuming from stock %s month %s\n", stock, monthKey)
+		for stockIdx, stock := range stocks {
+			// Skip stocks already completed in this month (resume logic).
+			if opts.Resume && cp != nil && cp.LastMonth == monthKey {
+				if cp.LastStockIdx > stockIdx {
+					continue
+				}
+				if cp.LastStockIdx == stockIdx && cp.LastStock == stock {
+					fmt.Fprintf(os.Stderr, "[INFO] resuming from stock %s month %s\n", stock, monthKey)
+				}
 			}
 
-			for _, batch := range batches {
+			for batchIdx, batch := range batches {
+				// Skip batches already completed (resume logic).
+				if opts.Resume && cp != nil && cp.LastMonth == monthKey && cp.LastStockIdx == stockIdx && cp.LastStock == stock {
+					if cp.LastBatch != "" {
+						batchStartStr := batch.Start.Format("2006-01-02")
+						if cp.LastBatch >= batchStartStr {
+							continue
+						}
+					}
+				}
+
 				missing, err := getMissingDates(ctx, db, stock, batch.Start, batch.End)
 				if err != nil {
 					totalFail++
@@ -477,22 +542,30 @@ func runBackfill(ctx context.Context, db *sql.DB, opts BackfillOptions) (*Backfi
 				}
 
 				delay := randomDelay(minInterBatchDelay, maxInterBatchDelay)
-				<-time.After(delay)
+				select {
+				case <-time.After(delay):
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
 
 				wg.Add(1)
 				sem <- struct{}{}
-				go func(s string, m MonthInterval, b MonthInterval, miss []time.Time) {
+				go func(s string, m MonthInterval, b MonthInterval, miss []time.Time, sIdx, bIdx int) {
 					defer wg.Done()
 					defer func() { <-sem }()
 
-					result, ferr := fetchWithFallback(ctx, chain, s, b.Start, b.End, len(miss))
+					// Create context with timeout for this MCP call.
+					fetchCtx, cancel := context.WithTimeout(ctx, mcpCallTimeout)
+					defer cancel()
+
+					result, ferr := fetchWithFallback(fetchCtx, chain, s, b.Start, b.End, len(miss))
 					mu.Lock()
 					defer mu.Unlock()
 					if ferr != nil {
 						totalFail++
 						recordSourceStats(statsMap, "fallback-chain", 0, 1)
 						if !opts.DryRun {
-							if merr := markNeedsReview(ctx, db, s); merr != nil {
+							if merr := markNeedsReview(fetchCtx, db, s); merr != nil {
 								fmt.Fprintf(os.Stderr, "[WARN] markNeedsReview failed for %s: %v\n", s, merr)
 							}
 						}
@@ -507,20 +580,32 @@ func runBackfill(ctx context.Context, db *sql.DB, opts BackfillOptions) (*Backfi
 						s, result.name, b.Start.Format("2006-01-02"), b.End.Format("2006-01-02"), len(result.data), result.coverage)
 
 					if !opts.DryRun {
-						n, uerr := upsertPrices(ctx, db, s, result.data)
+						n, uerr := upsertPrices(fetchCtx, db, s, result.data)
 						if uerr != nil {
 							fmt.Fprintf(os.Stderr, "[ERROR] upsert failed for %s: %v\n", s, uerr)
 						}
 						totalRows = totalRows - len(result.data) + n
 					}
-				}(stock, month, batch, missing)
+
+					// Update current progress for checkpoint.
+					currentProgress.LastStock = s
+					currentProgress.LastMonth = monthKey
+					currentProgress.LastBatch = b.Start.Format("2006-01-02")
+					currentProgress.LastStockIdx = sIdx
+					currentProgress.UpdatedAt = time.Now()
+				}(stock, month, batch, missing, stockIdx, batchIdx)
 			}
 		}
 		wg.Wait()
 
-		// Save checkpoint after each month.
+		// Save checkpoint after each month (with last stock info).
 		if !opts.DryRun {
-			if err := saveCheckpoint(checkpoint{LastStock: stocks[len(stocks)-1], LastMonth: monthKey}); err != nil {
+			currentProgress.LastStock = stocks[len(stocks)-1]
+			currentProgress.LastMonth = monthKey
+			currentProgress.LastBatch = ""
+			currentProgress.LastStockIdx = len(stocks) - 1
+			currentProgress.UpdatedAt = time.Now()
+			if err := saveCheckpoint(currentProgress); err != nil {
 				fmt.Fprintf(os.Stderr, "[WARN] checkpoint save failed: %v\n", err)
 			}
 		}
@@ -549,6 +634,10 @@ func runBackfill(ctx context.Context, db *sql.DB, opts BackfillOptions) (*Backfi
 		fmt.Fprintf(os.Stderr, "[INFO] dry run mode — no data persisted\n")
 	} else {
 		fmt.Fprintf(os.Stderr, "[INFO] backfill complete: %d rows, %.1f%% completion\n", totalRows, completion)
+	}
+	// Clear checkpoint on successful completion.
+	if !opts.DryRun {
+		_ = os.Remove(checkpointFilename)
 	}
 	return report, nil
 }

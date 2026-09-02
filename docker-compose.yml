@@ -1,7 +1,8 @@
 services:
-  postgres:
+  tw-quant-db:
     image: postgres:16-alpine
-    container_name: twquant-shared-postgres
+    container_name: tw-quant-db
+    hostname: tw-quant-db
     volumes:
       - ./pg_data:/var/lib/postgresql/data
       - ./init-scripts:/docker-entrypoint-initdb.d
@@ -25,10 +26,12 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.backfill
+    image: tw-quant-backfill:latest
     container_name: tw-quant-backfill
+    hostname: tw-quant-backfill
     environment:
-      - DATABASE_URL=postgresql://twquant:${POSTGRES_PASSWORD}@postgres:5432/twquant_shared?sslmode=disable
-      - MCP_HOST=http://tw-quant-mcp:8000
+      - DATABASE_URL=postgresql://twquant:${POSTGRES_PASSWORD}@tw-quant-db:5432/twquant_shared?sslmode=disable
+      - MCP_HOST=http://tw-quant-mcp:8888
       - TWSE_MCP_URL=https://TW-Stock-MCP-Server.fastmcp.app/mcp
       - FINMIND_API_KEY=${FINMIND_TOKEN:-}
       - FINMIND_TOKEN=${FINMIND_TOKEN:-}
@@ -39,16 +42,17 @@ services:
     volumes:
       - ./backfill_data:/app/data
     depends_on:
-      postgres:
+      tw-quant-db:
         condition: service_healthy
     networks:
       - tw-quant-network
     restart: "no"
 
   # pgAdmin for schema/DB inspection
-  pgadmin:
+  tw-quant-pgadmin:
     image: dpage/pgadmin4:latest
-    container_name: twquant-pgadmin
+    container_name: tw-quant-pgadmin
+    hostname: tw-quant-pgadmin
     environment:
       PGADMIN_DEFAULT_EMAIL: admin@twquant.internal
       PGADMIN_DEFAULT_PASSWORD_FILE: /run/secrets/pgadmin_password
@@ -58,12 +62,12 @@ services:
       - pgadmin_password
       - pgpass
     ports:
-      - "5050:80"
+      - "8001:80"
     volumes:
       - pgadmin_data:/var/lib/pgadmin
       - ./scripts/pgadmin_servers.json:/pgadmin4/servers.json:ro
     depends_on:
-      postgres:
+      tw-quant-db:
         condition: service_healthy
     networks:
       - tw-quant-network

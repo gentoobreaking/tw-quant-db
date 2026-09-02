@@ -1,0 +1,15 @@
+{
+  "start_date": "2025-08-25",
+  "end_date": "2025-09-30",
+  "total_stocks": 1,
+  "total_rows": 2,
+  "sources": [
+    {
+      "source": "local-mcp",
+      "success_count": 1,
+      "failure_count": 0,
+      "rows_fetched": 2
+    }
+  ],
+  "completion_pct": 100
+}
