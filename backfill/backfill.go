@@ -33,19 +33,27 @@ const (
 )
 
 // sourceQuality weights per spec §4 (Table: 1.0, 0.9, 0.7, 0.5).
+// Canonical sources (TWSE official) get highest weight.
 var sourceQuality = map[string]float64{
-	"local-mcp":   1.0,
-	"twse-mcp":    0.9,
-	"finmind-mcp": 0.7,
-	"yfinance-mcp": 0.5,
+	"twse-mcp":    1.0, // 即時官方 → CANONICAL
+	"local-mcp":   0.95, // 本地官方快取 → CANONICAL
+	"finmind-mcp": 0.7,  // 備援 → FALLBACK
+	"yfinance-mcp": 0.5, // 備援 → FALLBACK
+}
+
+// canonicalSources defines which sources produce CANONICAL data.
+var canonicalSources = map[string]bool{
+	"twse-mcp":  true,
+	"local-mcp": true,
 }
 
 // SourceResult wraps fetched data with a quality score.
 type SourceResult struct {
-	name      string
-	data      []PriceData
-	score     float64
-	coverage  float64
+	name       string
+	data       []PriceData
+	score      float64
+	coverage   float64
+	isCanonical bool // true if source is TWSE official (CANONICAL)
 }
 
 // BackfillOptions configures a single backfill run.
@@ -237,14 +245,23 @@ func markNeedsReview(ctx context.Context, db *sql.DB, symbol string) error {
 	return err
 }
 
-// upsertPrices writes price data to core.daily_prices with ON CONFLICT DO UPDATE per spec §7.
-func upsertPrices(ctx context.Context, db *sql.DB, symbol string, rows []PriceData) (int, error) {
+// upsertPrices writes price data to core.daily_prices.
+// Canonical sources (TWSE official): PIT semantics - DO NOTHING for existing CANONICAL,
+// but allow upgrading FALLBACK rows (WHERE source_role='FALLBACK').
+// Fallback sources: DO UPDATE only where existing row is FALLBACK.
+func upsertPrices(ctx context.Context, db *sql.DB, symbol string, rows []PriceData, isCanonical bool) (int, error) {
 	if len(rows) == 0 {
 		return 0, nil
 	}
 	isSQLite := os.Getenv("TW_QUANT_DB_PATH") != ""
 	const batchSize = 200
 	var inserted int
+
+	sourceRole := "FALLBACK"
+	if isCanonical {
+		sourceRole = "CANONICAL"
+	}
+
 	for i := 0; i < len(rows); i += batchSize {
 		end := i + batchSize
 		if end > len(rows) {
@@ -254,28 +271,86 @@ func upsertPrices(ctx context.Context, db *sql.DB, symbol string, rows []PriceDa
 		for _, r := range batch {
 			var err error
 			if isSQLite {
-				_, err = db.ExecContext(ctx, `
+				if isCanonical {
+					// CANONICAL: PIT - DO NOTHING if CANONICAL exists, but upgrade FALLBACK
+					_, err = db.ExecContext(ctx, `
 INSERT INTO core_daily_prices
   (symbol, trade_date, open, high, low, close, volume, adjusted_close,
    source, data_date, freshness, source_role)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'backfill_go', date('now'), 'FALLBACK', 'FALLBACK')
-`, symbol, r.TradeDate, r.Open, r.High, r.Low, r.Close, r.Volume, r.AdjustedClose)
-				if err != nil {
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'backfill_go', date('now'), 'FALLBACK', ?)
+ON CONFLICT(symbol, trade_date) DO UPDATE SET
+  open = EXCLUDED.open,
+  high = EXCLUDED.high,
+  low = EXCLUDED.low,
+  close = EXCLUDED.close,
+  volume = EXCLUDED.volume,
+  adjusted_close = EXCLUDED.adjusted_close,
+  source = EXCLUDED.source,
+  data_date = EXCLUDED.data_date,
+  freshness = EXCLUDED.freshness,
+  source_role = EXCLUDED.source_role
+WHERE core_daily_prices.source_role = 'FALLBACK'
+`, symbol, r.TradeDate, r.Open, r.High, r.Low, r.Close, r.Volume, r.AdjustedClose, sourceRole)
+				} else {
+					// FALLBACK: only update if existing is FALLBACK
 					_, err = db.ExecContext(ctx, `
-UPDATE core_daily_prices SET open=?, high=?, low=?, close=?, volume=?, adjusted_close=?
-WHERE symbol=? AND trade_date=?`, r.Open, r.High, r.Low, r.Close, r.Volume, r.AdjustedClose, symbol, r.TradeDate)
+INSERT INTO core_daily_prices
+  (symbol, trade_date, open, high, low, close, volume, adjusted_close,
+   source, data_date, freshness, source_role)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'backfill_go', date('now'), 'FALLBACK', ?)
+ON CONFLICT(symbol, trade_date) DO UPDATE SET
+  open = EXCLUDED.open,
+  high = EXCLUDED.high,
+  low = EXCLUDED.low,
+  close = EXCLUDED.close,
+  volume = EXCLUDED.volume,
+  adjusted_close = EXCLUDED.adjusted_close,
+  source = EXCLUDED.source,
+  data_date = EXCLUDED.data_date,
+  freshness = EXCLUDED.freshness
+WHERE core_daily_prices.source_role = 'FALLBACK'
+`, symbol, r.TradeDate, r.Open, r.High, r.Low, r.Close, r.Volume, r.AdjustedClose, sourceRole)
 				}
 			} else {
-				_, err = db.ExecContext(ctx, `
+				if isCanonical {
+					// CANONICAL: PIT - DO NOTHING if CANONICAL exists, but upgrade FALLBACK
+					_, err = db.ExecContext(ctx, `
 INSERT INTO core.daily_prices
   (symbol, trade_date, open, high, low, close, volume, adjusted_close,
    source, data_date, freshness, source_role)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'backfill_go', CURRENT_DATE, 'FALLBACK', 'FALLBACK')
-`, symbol, r.TradeDate, r.Open, r.High, r.Low, r.Close, r.Volume, r.AdjustedClose)
-				if err != nil {
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'backfill_go', CURRENT_DATE, 'FALLBACK', $9)
+ON CONFLICT (symbol, trade_date) DO UPDATE SET
+  open = EXCLUDED.open,
+  high = EXCLUDED.high,
+  low = EXCLUDED.low,
+  close = EXCLUDED.close,
+  volume = EXCLUDED.volume,
+  adjusted_close = EXCLUDED.adjusted_close,
+  source = EXCLUDED.source,
+  data_date = EXCLUDED.data_date,
+  freshness = EXCLUDED.freshness,
+  source_role = EXCLUDED.source_role
+WHERE core.daily_prices.source_role = 'FALLBACK'
+`, symbol, r.TradeDate, r.Open, r.High, r.Low, r.Close, r.Volume, r.AdjustedClose, sourceRole)
+				} else {
+					// FALLBACK: only update if existing is FALLBACK
 					_, err = db.ExecContext(ctx, `
-UPDATE core.daily_prices SET open=$3, high=$4, low=$5, close=$6, volume=$7, adjusted_close=$8
-WHERE symbol=$1 AND trade_date=$2`, symbol, r.TradeDate, r.Open, r.High, r.Low, r.Close, r.Volume, r.AdjustedClose)
+INSERT INTO core.daily_prices
+  (symbol, trade_date, open, high, low, close, volume, adjusted_close,
+   source, data_date, freshness, source_role)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'backfill_go', CURRENT_DATE, 'FALLBACK', $9)
+ON CONFLICT (symbol, trade_date) DO UPDATE SET
+  open = EXCLUDED.open,
+  high = EXCLUDED.high,
+  low = EXCLUDED.low,
+  close = EXCLUDED.close,
+  volume = EXCLUDED.volume,
+  adjusted_close = EXCLUDED.adjusted_close,
+  source = EXCLUDED.source,
+  data_date = EXCLUDED.data_date,
+  freshness = EXCLUDED.freshness
+WHERE core.daily_prices.source_role = 'FALLBACK'
+`, symbol, r.TradeDate, r.Open, r.High, r.Low, r.Close, r.Volume, r.AdjustedClose, sourceRole)
 				}
 			}
 			if err != nil {
@@ -295,7 +370,7 @@ func fetchWithQuality(ctx context.Context, s Source, symbol string, start, end t
 		return nil, err
 	}
 	if len(prices) == 0 {
-		return &SourceResult{name: s.Name(), data: prices, score: 0, coverage: 0}, fmt.Errorf("no data returned")
+		return &SourceResult{name: s.Name(), data: prices, score: 0, coverage: 0, isCanonical: canonicalSources[s.Name()]}, fmt.Errorf("no data returned")
 	}
 	coverage := 1.0
 	if requested > 0 {
@@ -303,7 +378,7 @@ func fetchWithQuality(ctx context.Context, s Source, symbol string, start, end t
 	}
 	weight := sourceQuality[s.Name()]
 	score := weight * coverage
-	return &SourceResult{name: s.Name(), data: prices, score: score, coverage: coverage}, nil
+	return &SourceResult{name: s.Name(), data: prices, score: score, coverage: coverage, isCanonical: canonicalSources[s.Name()]}, nil
 }
 
 // isRetryable classifies errors per spec §5.3 Switch Triggers.
@@ -428,11 +503,12 @@ func runBackfill(ctx context.Context, db *sql.DB, opts BackfillOptions) (*Backfi
 		return nil, fmt.Errorf("stock list: %w", err)
 	}
 
+	// Chain order: TWSE official first (CANONICAL), then local cache (CANONICAL), then fallbacks
 	chain := FallbackChain([]Source{
-		&LocalMCPSource{addr: os.Getenv("MCP_HOST")},
-		&TWSEMCPSource{addr: os.Getenv("TWSE_MCP_HOST")},
-		&FinMindMCPSource{addr: os.Getenv("FINMIND_MCP_HOST"), apiKey: os.Getenv("FINMIND_API_KEY")},
-		&YFinanceMCPSource{addr: os.Getenv("YFINANCE_MCP_HOST")},
+		&TWSEMCPSource{addr: os.Getenv("TWSE_MCP_HOST")},       // 1st: 即時官方 → CANONICAL
+		&LocalMCPSource{addr: os.Getenv("MCP_HOST")},           // 2nd: 本地官方快取 → CANONICAL
+		&FinMindMCPSource{addr: os.Getenv("FINMIND_MCP_HOST"), apiKey: os.Getenv("FINMIND_API_KEY")}, // 3rd: FALLBACK
+		&YFinanceMCPSource{addr: os.Getenv("YFINANCE_MCP_HOST")}, // 4th: FALLBACK
 	})
 
 	start, end := opts.StartDate, opts.EndDate
@@ -576,11 +652,11 @@ func runBackfill(ctx context.Context, db *sql.DB, opts BackfillOptions) (*Backfi
 					totalRows += len(result.data)
 					recordSourceStats(statsMap, result.name, 1, 0)
 					statsMap[result.name].RowsFetched += len(result.data)
-					fmt.Fprintf(os.Stderr, "[INFO] fetched %s from %s for %s (%s), rows=%d, coverage=%.2f\n",
-						s, result.name, b.Start.Format("2006-01-02"), b.End.Format("2006-01-02"), len(result.data), result.coverage)
+					fmt.Fprintf(os.Stderr, "[INFO] fetched %s from %s for %s (%s), rows=%d, coverage=%.2f, canonical=%v\n",
+						s, result.name, b.Start.Format("2006-01-02"), b.End.Format("2006-01-02"), len(result.data), result.coverage, result.isCanonical)
 
 					if !opts.DryRun {
-						n, uerr := upsertPrices(fetchCtx, db, s, result.data)
+						n, uerr := upsertPrices(fetchCtx, db, s, result.data, result.isCanonical)
 						if uerr != nil {
 							fmt.Fprintf(os.Stderr, "[ERROR] upsert failed for %s: %v\n", s, uerr)
 						}
