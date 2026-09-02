@@ -3,6 +3,10 @@ services:
     image: postgres:16-alpine
     container_name: tw-quant-db
     hostname: tw-quant-db
+    environment:
+      POSTGRES_USER: twquant
+      POSTGRES_PASSWORD_FILE: /run/secrets/pg_password
+      POSTGRES_DB: twquant_shared
     volumes:
       - ./pg_data:/var/lib/postgresql/data
       - ./init-scripts:/docker-entrypoint-initdb.d
