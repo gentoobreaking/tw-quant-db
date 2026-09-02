@@ -51,6 +51,37 @@ services:
     networks:
       - tw-quant-network
     restart: "no"
+  # HTTP API server for backfill (for pickup scheduler T048)
+  tw-quant-backfill-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.backfill
+    image: tw-quant-backfill:latest
+    container_name: tw-quant-backfill-api
+    hostname: tw-quant-backfill-api
+    environment:
+      - DATABASE_URL=postgresql://twquant:${POSTGRES_PASSWORD}@tw-quant-db:5432/twquant_shared?sslmode=disable
+      - MCP_HOST=http://tw-quant-mcp:8888
+      - TWSE_MCP_URL=https://TW-Stock-MCP-Server.fastmcp.app/mcp
+      - FINMIND_API_KEY=${FINMIND_TOKEN:-}
+      - FINMIND_TOKEN=${FINMIND_TOKEN:-}
+      - BACKFILL_ALL_LISTED=true
+    command: ["--mode=server", "--port=8080"]
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./backfill_data:/app/data
+    depends_on:
+      tw-quant-db:
+        condition: service_healthy
+    networks:
+      - tw-quant-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   # pgAdmin for schema/DB inspection
   tw-quant-pgadmin:
